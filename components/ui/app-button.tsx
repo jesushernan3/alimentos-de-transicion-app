@@ -75,7 +75,7 @@ export function AppButton({
                 size === "medium" && styles.labelMedium,
                 { color: palette.text },
               ]}
-              numberOfLines={1}
+              numberOfLines={2}
             >
               {label}
             </Text>
@@ -88,12 +88,12 @@ export function AppButton({
 
 const styles = StyleSheet.create({
   button: {
-    minHeight: 52,
+    minHeight: 68,
     borderRadius: 16,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 20,
+    paddingHorizontal: 12,
   },
   buttonMedium: {
     minHeight: 44,
@@ -113,6 +113,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 22,
     fontWeight: "700",
+    flexShrink: 1,
   },
   labelMedium: {
     fontSize: 15,

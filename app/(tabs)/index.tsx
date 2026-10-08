@@ -350,7 +350,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   greetingTitle: {
-    ...display(29, "700"),
+    ...display(26, "700"),
   },
   subtitle: {
     fontSize: 15,

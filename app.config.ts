@@ -38,7 +38,7 @@ const env = {
 const config: ExpoConfig = {
   name: env.appName,
   slug: env.appSlug,
-  version: "1.0.0",
+  version: "1.0.2",
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
@@ -61,7 +61,7 @@ const config: ExpoConfig = {
     // Google Play identifica cada subida por este número, no por `version`.
     // Debe subir de uno en uno en cada .aab que se envíe: si se repite, Play
     // rechaza la subida con «Version code already used».
-    versionCode: 1,
+    versionCode: 3,
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,

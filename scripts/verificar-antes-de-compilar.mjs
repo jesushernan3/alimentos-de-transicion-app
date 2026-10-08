@@ -21,8 +21,8 @@ const ESPERADO = {
   slug: "cocina-tu-mejor-version",
   projectId: "3a4a1b52-966f-4ece-acb6-906aa1daa43c",
   package: "com.alimentosdetransicion.app",
-  version: "1.0.0",
-  versionCode: 1,
+  version: "1.0.2",
+  versionCode: 3,
   servidor: "https://cocinareceta-fhboicw9.manus.space",
 };
 
@@ -76,7 +76,11 @@ if (config) {
   comparar("nombre corto (slug)", config.slug, ESPERADO.slug);
   comparar("paquete de Android", config.android?.package, ESPERADO.package);
   comparar("versión visible", config.version, ESPERADO.version);
-  comparar("número de versión", config.android?.versionCode, ESPERADO.versionCode);
+  comparar(
+    "número de versión",
+    config.android?.versionCode,
+    ESPERADO.versionCode,
+  );
 
   const permisos = config.android?.permissions ?? [];
   if (permisos.length === 1 && permisos[0] === "POST_NOTIFICATIONS") {
@@ -103,15 +107,23 @@ if (!existsSync(rutaEas)) {
   const prod = eas.build?.production;
   const prev = eas.build?.preview;
 
-  if (prod?.android?.buildType === "app-bundle") ok("producción genera App Bundle");
-  else mal(`producción debería generar app-bundle, genera ${prod?.android?.buildType}`);
+  if (prod?.android?.buildType === "app-bundle")
+    ok("producción genera App Bundle");
+  else
+    mal(
+      `producción debería generar app-bundle, genera ${prod?.android?.buildType}`,
+    );
 
   if (prev?.android?.buildType === "apk") ok("prueba genera APK instalable");
   else mal(`prueba debería generar apk, genera ${prev?.android?.buildType}`);
 
-  for (const [nombre, perfil] of [["producción", prod], ["prueba", prev]]) {
+  for (const [nombre, perfil] of [
+    ["producción", prod],
+    ["prueba", prev],
+  ]) {
     const url = perfil?.env?.EXPO_PUBLIC_API_BASE_URL;
-    if (url === ESPERADO.servidor) ok(`${nombre} apunta al servidor de producción`);
+    if (url === ESPERADO.servidor)
+      ok(`${nombre} apunta al servidor de producción`);
     else mal(`${nombre} apunta a ${url ?? "ningún servidor"}`);
   }
 }
@@ -126,7 +138,8 @@ for (const [ruta, descripcion] of ARCHIVOS_RECIENTES) {
 const home = join(raiz, "app/(tabs)/index.tsx");
 if (existsSync(home)) {
   const contenido = readFileSync(home, "utf8");
-  if (contenido.includes("logo-adt")) ok("logo en el encabezado de la pantalla principal");
+  if (contenido.includes("logo-adt"))
+    ok("logo en el encabezado de la pantalla principal");
   else mal("el encabezado no incluye el logo");
 
   const posColecciones = contenido.indexOf('title="Tus colecciones"');
@@ -148,17 +161,23 @@ if (existsSync(join(raiz, "node_modules"))) ok("dependencias instaladas");
 else mal("faltan las dependencias; ejecutá pnpm install");
 
 if (existsSync(join(raiz, ".env"))) {
-  aviso("hay un archivo .env local; los perfiles de compilación fijan el servidor igual");
+  aviso(
+    "hay un archivo .env local; los perfiles de compilación fijan el servidor igual",
+  );
 }
 
 // Resumen
 console.log("");
 if (fallas === 0) {
-  console.log(`\x1b[32mTodo en orden${avisos ? ` (con ${avisos} aviso${avisos > 1 ? "s" : ""})` : ""}.\x1b[0m`);
+  console.log(
+    `\x1b[32mTodo en orden${avisos ? ` (con ${avisos} aviso${avisos > 1 ? "s" : ""})` : ""}.\x1b[0m`,
+  );
   console.log("Podés continuar con la compilación del APK de prueba.\n");
   process.exit(0);
 }
 
-console.log(`\x1b[31m${fallas} comprobación${fallas > 1 ? "es" : ""} sin pasar.\x1b[0m`);
+console.log(
+  `\x1b[31m${fallas} comprobación${fallas > 1 ? "es" : ""} sin pasar.\x1b[0m`,
+);
 console.log("No compiles hasta resolverlas.\n");
 process.exit(1);

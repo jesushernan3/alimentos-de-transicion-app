@@ -29,7 +29,9 @@ export function RecipeCard({
   variant = "hero",
 }: RecipeCardProps) {
   const colors = useColors();
-  const thumbUri = recipe.thumbUrl ?? recipe.imageUrl;
+
+  const thumbUri = recipe.thumbUrl?.trim() || null;
+  const imageUri = recipe.imageUrl?.trim() || null;
 
   function handleFavorite() {
     if (Platform.OS !== "web") {
@@ -70,14 +72,24 @@ export function RecipeCard({
           pressed && { opacity: 0.75 },
         ]}
       >
-        <CachedImage uri={thumbUri} style={styles.rowImage} />
+        <CachedImage
+          uri={thumbUri || imageUri}
+          fallbackUri={thumbUri ? imageUri : null}
+          style={styles.rowImage}
+        />
+
         <View style={styles.rowContent}>
           <Text style={[styles.rowCategory, { color: colors.primary }]}>
             {mealTypeLabel(recipe.category)}
           </Text>
-          <Text style={[styles.rowTitle, { color: colors.foreground }]} numberOfLines={2}>
+
+          <Text
+            style={[styles.rowTitle, { color: colors.foreground }]}
+            numberOfLines={2}
+          >
             {recipe.title}
           </Text>
+
           <View style={styles.metaRow}>
             <View style={styles.metaItem}>
               <AppIcon name="timer-outline" size={14} color={colors.muted} />
@@ -85,12 +97,14 @@ export function RecipeCard({
                 {formatMinutes(recipe.totalTime)}
               </Text>
             </View>
+
             <View style={styles.metaItem}>
               <AppIcon name="difficulty" size={14} color={colors.muted} />
               <Text style={[styles.metaText, { color: colors.muted }]}>
                 {difficultyLabel(recipe.difficulty)}
               </Text>
             </View>
+
             <View style={styles.metaItem}>
               <AppIcon name="people" size={14} color={colors.muted} />
               <Text style={[styles.metaText, { color: colors.muted }]}>
@@ -99,6 +113,7 @@ export function RecipeCard({
             </View>
           </View>
         </View>
+
         <View style={styles.rowFavorite}>{favoriteButton}</View>
       </Pressable>
     );
@@ -119,13 +134,20 @@ export function RecipeCard({
       ]}
     >
       <View>
-        <CachedImage uri={thumbUri} style={isHero ? styles.imageHero : styles.imageCompact} />
+        <CachedImage
+          uri={thumbUri || imageUri}
+          fallbackUri={thumbUri ? imageUri : null}
+          style={isHero ? styles.imageHero : styles.imageCompact}
+        />
+
         <View style={styles.favoriteWrapper}>{favoriteButton}</View>
       </View>
+
       <View style={styles.cardBody}>
         <Text style={[styles.cardCategory, { color: colors.primary }]}>
           {mealTypeLabel(recipe.category)}
         </Text>
+
         <Text
           style={[
             isHero ? styles.cardTitle : styles.cardTitleCompact,
@@ -135,6 +157,7 @@ export function RecipeCard({
         >
           {recipe.title}
         </Text>
+
         <View style={styles.metaRow}>
           <View style={styles.metaItem}>
             <AppIcon name="timer-outline" size={14} color={colors.muted} />
@@ -142,6 +165,7 @@ export function RecipeCard({
               {formatMinutes(recipe.totalTime)}
             </Text>
           </View>
+
           <View style={styles.metaItem}>
             <AppIcon name="difficulty" size={14} color={colors.muted} />
             <Text style={[styles.metaText, { color: colors.muted }]}>

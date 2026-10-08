@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -30,6 +31,7 @@ import {
   type UnitSystem,
   useUserData,
 } from "@/lib/user-data-context";
+import Constants from "expo-constants";
 
 const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: "claro", label: "Claro" },
@@ -167,7 +169,7 @@ export default function AjustesScreen() {
   function confirmSignOut() {
     Alert.alert(
       "¿Querés cerrar sesión?",
-      "Si cerrás sesión, vas a seguir conservando en este dispositivo tus recetas descargadas, favoritos, planificador y lista de compras. Mientras no vuelvas a iniciar sesión, no vas a recibir nuevas recetas, cambios ni actualizaciones de contenido.",
+      "Si cerrás sesión, vas a seguir conservando en este dispositivo tus recetas descargadas, favoritos, planificador y lista de compras. Mientras no vuelvas a iniciar sesión, no vas a recibir recetas nuevas ni actualizaciones de contenido.",
       [
         { text: "Cancelar", style: "cancel" },
         {
@@ -202,7 +204,7 @@ export default function AjustesScreen() {
   function confirmClearPhotos() {
     Alert.alert(
       "Borrar las fotos descargadas",
-      "Libera espacio en el teléfono. Las recetas, favoritos y tu plan no se tocan. Las fotos se vuelven a descargar cuando tengas conexión.",
+      "Libera espacio en el teléfono. Tus recetas, favoritos, planificación y lista de compras no se modifican. Las imágenes volverán a descargarse cuando tengas conexión.",
       [
         { text: "Cancelar", style: "cancel" },
         {
@@ -224,7 +226,7 @@ export default function AjustesScreen() {
   function confirmRepair() {
     Alert.alert(
       "Volver a descargar todo",
-      "Descargamos el recetario completo otra vez. Puede tardar unos minutos y usa datos. Tus favoritos y tu plan no se tocan.",
+      "Se volverán a descargar las recetas y el contenido disponible. Puede tardar unos minutos y usar datos móviles. Tus favoritos, planificación y lista de compras no se modifican.",
       [
         { text: "Cancelar", style: "cancel" },
         { text: "Descargar", onPress: () => syncNow({ force: true }) },
@@ -235,7 +237,7 @@ export default function AjustesScreen() {
   function confirmClearData() {
     Alert.alert(
       "Limpiar datos temporales",
-      "Se van a borrar la lista de compras y el historial de búsqueda. Tus favoritos y tu plan semanal no se modifican.",
+      "Se borrarán la lista de compras y el historial de búsqueda de este dispositivo. Tus favoritos y tu planificación no se modifican.",
       [
         { text: "Cancelar", style: "cancel" },
         {
@@ -270,7 +272,7 @@ export default function AjustesScreen() {
 
         <SettingsBlock title="Unidades de medida">
           <Text style={[styles.optionLabel, { color: colors.muted }]}>
-            Sistema usado en los ingredientes
+            Sistema de medida para los ingredientes
           </Text>
           <View style={styles.chips}>
             {UNIT_OPTIONS.map((option) => (
@@ -284,9 +286,8 @@ export default function AjustesScreen() {
           </View>
           {preferences.units === "imperial" ? (
             <Text style={[styles.hint, { color: colors.muted }]}>
-              El recetario está escrito en sistema métrico. La conversión a imperial se aplicará
-              cuando esté disponible la tabla de equivalencias completa.
-            </Text>
+              Las recetas están preparadas originalmente en sistema métrico. La conversión a unidades
+              imperiales estará disponible en una próxima actualización.</Text>
           ) : null}
         </SettingsBlock>
 
@@ -294,7 +295,7 @@ export default function AjustesScreen() {
           <View style={styles.switchRow}>
             <View style={styles.switchTexts}>
               <Text style={[styles.switchTitle, { color: colors.foreground }]}>
-                Recordatorios de cocina
+                Avisos sobre tu plan semanal y nuevas recetas.
               </Text>
               <Text style={[styles.switchSubtitle, { color: colors.muted }]}>
                 Avisos sobre tu plan semanal y nuevas recetas.
@@ -309,7 +310,7 @@ export default function AjustesScreen() {
           </View>
         </SettingsBlock>
 
-        <SettingsBlock title="Contenido offline">
+        <SettingsBlock title="Contenido sin conexión">
           <View style={[styles.infoCard, { backgroundColor: colors.surfaceAlt }]}>
             <AppIcon
               name={workingOffline ? "wifiOff" : "cloudOff"}
@@ -317,9 +318,9 @@ export default function AjustesScreen() {
               color={workingOffline ? colors.warning : colors.success}
             />
             <Text style={[styles.infoText, { color: colors.foreground }]}>
-              {recipes.length} recetas y {collections.length} colecciones guardadas en este
-              teléfono{cacheSize > 0 ? `, ocupando ${formatBytes(cacheSize)} de fotos` : ""}. Podés
-              cocinar sin conexión.
+              {recipes.length} recetas y {collections.length} colecciones están guardadas en este teléfono
+              {cacheSize > 0 ? `, junto con ${formatBytes(cacheSize)} de imágenes` : ""}. Podés consultar
+              este contenido sin conexión.
             </Text>
           </View>
 
@@ -328,8 +329,8 @@ export default function AjustesScreen() {
               <AppIcon name="warning" size={18} color={colors.warning} />
               <View style={styles.missingTexts}>
                 <Text style={[styles.infoText, { color: colors.foreground }]}>
-                  Faltan {missingPhotos} {missingPhotos === 1 ? "foto" : "fotos"} por descargar. Sin
-                  conexión esas recetas se van a ver sin imagen.
+                  Faltan {missingPhotos} {missingPhotos === 1 ? "imagen" : "imágenes"} por descargar.
+                  Si no tenés conexión, algunas recetas pueden verse sin foto.
                 </Text>
                 {repairingPhotos ? (
                   <View style={styles.missingProgress}>
@@ -402,13 +403,40 @@ export default function AjustesScreen() {
           <View style={[styles.infoCard, { backgroundColor: colors.surfaceAlt }]}>
             <AppIcon name="lock" size={18} color={colors.primary} />
             <Text style={[styles.infoText, { color: colors.foreground }]}>
-              Ingresaste con {email ?? "tu correo"}. Tu acceso queda guardado en este teléfono y se
-              mantiene mientras uses la aplicación; si pasás 180 días sin abrirla con conexión,
-              tendrás que ingresar de nuevo con un código.
+              Ingresaste con {email ?? "tu correo"}. Este correo está asociado a tu acceso a la app.
+              Si pasás 180 días sin usar Alimentos de Transición con conexión, vas a tener que
+              iniciar sesión nuevamente con un código.
             </Text>
           </View>
-          <SettingsRow icon="support" label="Ayuda" onPress={() => router.push("/soporte")} />
-          <SettingsRow icon="logout" label="Cerrar sesión" onPress={confirmSignOut} destructive isLast />
+          <SettingsRow
+            icon="support"
+            label="Ayuda"
+            onPress={() => router.push("/soporte")}
+          />
+
+          <SettingsRow
+            icon="refresh"
+            label="Ver introducción de nuevo"
+            onPress={() => router.push("/onboarding")}
+          />
+
+          <SettingsRow
+            icon="star"
+            label="Calificar la app"
+            onPress={() =>
+              Linking.openURL(
+                "https://play.google.com/store/apps/details?id=com.alimentosdetransicion.app"
+              )
+            }
+          />
+
+          <SettingsRow
+            icon="logout"
+            label="Cerrar sesión"
+            onPress={confirmSignOut}
+            destructive
+            isLast
+          />
         </SettingsBlock>
 
         <SettingsBlock title="Datos y privacidad">
@@ -432,7 +460,7 @@ export default function AjustesScreen() {
         </SettingsBlock>
 
         <Text style={[styles.version, { color: colors.muted }]}>
-          Alimentos de Transición · Versión 1.0.0
+          Alimentos de Transición · Versión {Constants.expoConfig?.version ?? "1.0.0"}
         </Text>
       </ScrollView>
     </ScreenContainer>

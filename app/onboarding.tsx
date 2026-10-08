@@ -34,21 +34,21 @@ const ONBOARDING_IMAGES = {
 const SLIDES = [
   {
     imageKey: "onboarding-1" as const,
-    title: "Recetas reales, sin complicaciones",
+    title: "Descubrí recetas para cada momento",
     description:
-      "Todo tu recetario de Alimentos de Transición, con ingredientes que se consiguen en cualquier verdulería o supermercado.",
+      "Explorá recetas, categorías y colecciones para encontrar fácilmente qué cocinar.",
   },
   {
     imageKey: "onboarding-2" as const,
-    title: "Organizá tu semana en minutos",
+    title: "Planificá tu semana",
     description:
-      "Asigná recetas a cada día y comida. Tu plan queda guardado en el teléfono, incluso sin conexión.",
+      "Organizá tus comidas día por día. Tu planificación queda guardada en el teléfono.",
   },
   {
     imageKey: "onboarding-3" as const,
-    title: "La lista de compras se arma sola",
+    title: "Armá tu lista de compras",
     description:
-      "Generamos la lista consolidada de todo lo que necesitás, agrupada por sector del supermercado.",
+      "Sumá ingredientes desde tus recetas y llevá una lista ordenada para hacer las compras.",
   },
 ];
 
@@ -121,6 +121,9 @@ export default function OnboardingScreen() {
       </ScrollView>
 
       <View style={styles.footer}>
+        <Text style={[styles.progressText, { color: colors.muted }]}>
+          {index + 1} de {SLIDES.length}
+        </Text>
         <View style={styles.dots}>
           {SLIDES.map((slide, dotIndex) => (
             <View
@@ -136,7 +139,7 @@ export default function OnboardingScreen() {
           ))}
         </View>
         <AppButton
-          label={index === SLIDES.length - 1 ? "Empezar a cocinar" : "Continuar"}
+          label={index === SLIDES.length - 1 ? "Empezar" : "Siguiente"}
           onPress={goNext}
         />
       </View>
@@ -195,5 +198,11 @@ const styles = StyleSheet.create({
   dot: {
     height: 8,
     borderRadius: 4,
+  },
+  progressText: {
+    textAlign: "center",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "600",
   },
 });

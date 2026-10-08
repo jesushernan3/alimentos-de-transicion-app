@@ -22,33 +22,38 @@ import { useCatalog } from "@/lib/catalog-context";
 import { trackEvent } from "@/lib/analytics";
 import { display } from "@/lib/typography";
 
-const SUPPORT_EMAIL = "hola@alimentosdetransicion.com";
+const SUPPORT_EMAIL = "info@alimentosdetransicion.com";
 
 const FAQ = [
   {
     question: "No me llega el código de acceso",
     answer:
-      "Revisá la carpeta de spam o correo no deseado. El código llega en un par de minutos y vence a los 10. Si pasó más tiempo, pedí uno nuevo desde la pantalla de acceso. Si sigue sin llegar, escribinos y lo resolvemos.",
+      "Primero revisá Spam, Correo no deseado o Promociones. El código puede tardar unos minutos y vence a los 10 minutos. Si venció o no llegó, volvé a la pantalla de acceso y pedí uno nuevo. Si el problema continúa, escribinos desde esta pantalla.",
   },
   {
-    question: "Compré el recetario pero dice que no encuentra mi acceso",
+    question: "Compré la app pero no reconoce mi acceso",
     answer:
-      "Suele pasar cuando el correo de la compra es distinto al que estás usando para entrar. Probá con el correo donde recibiste la confirmación de compra. Si no funciona, escribinos con el número de pedido.",
+      "Ingresá con el mismo correo que usaste al realizar la compra. Es el correo que quedó asociado a tu acceso. Si ya lo estás usando y aun así no podés entrar, escribinos e indicá el número de pedido para que podamos revisarlo.",
   },
   {
-    question: "¿Funciona sin internet?",
+    question: "¿Puedo usar la app sin internet?",
     answer:
-      "Sí. La primera vez descargamos todas las recetas y sus fotos a tu teléfono. Después podés cocinar sin conexión, en el supermercado o donde no haya señal. Solo necesitás internet cuando querés buscar recetas nuevas.",
+      "Sí. Las recetas y el contenido descargado quedan disponibles en tu teléfono para que puedas consultarlos sin conexión. Algunas fotos adicionales pueden descargarse cuando abrís una receta por primera vez. Para recibir recetas nuevas, cambios o actualizaciones necesitás conectarte a internet.",
   },
   {
-    question: "Cambié de teléfono, ¿pierdo el acceso?",
+    question: "Cambié de teléfono, ¿pierdo mi acceso?",
     answer:
-      "No. Instalá la aplicación en el teléfono nuevo e ingresá con el mismo correo. Tus recetas se descargan de nuevo. Tené en cuenta que tus favoritos, el plan de la semana y la lista de compras se guardan solo en el teléfono, así que esos no viajan.",
+      "No. Instalá Alimentos de Transición en el teléfono nuevo e ingresá con el mismo correo asociado a tu compra. El contenido disponible se descargará nuevamente. Tus favoritos, plan semanal y lista de compras se guardan de forma local en cada dispositivo, por lo que no se transfieren automáticamente al teléfono nuevo.",
   },
   {
-    question: "¿Cómo veo si hay recetas nuevas?",
+    question: "¿Cómo recibo recetas y contenido nuevo?",
     answer:
-      "La aplicación busca contenido nuevo sola cada vez que la abrís con internet. También podés hacerlo a mano desde Ajustes, en «Buscar contenido nuevo».",
+      "Cuando abrís la app con internet, Alimentos de Transición busca automáticamente las actualizaciones disponibles. También podés comprobarlas manualmente desde Ajustes, en la sección «Contenido offline», tocando «Buscar».",
+  },
+  {
+    question: "¿Qué pasa si cierro sesión?",
+    answer:
+      "Las recetas descargadas, tus favoritos, el planificador y la lista de compras permanecen guardados en ese teléfono. Mientras no vuelvas a iniciar sesión, no vas a recibir recetas nuevas ni actualizaciones de contenido.",
   },
 ];
 
@@ -80,8 +85,10 @@ export default function SoporteScreen() {
     ].join("\n");
 
     const url = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(
-      "Ayuda con la app de Alimentos de Transición",
-    )}&body=${encodeURIComponent(`Hola, necesito ayuda con:\n${diagnostics}`)}`;
+      "Soporte — Alimentos de Transición",
+    )}&body=${encodeURIComponent(
+      `Hola, necesito ayuda con:\n\n[Contanos acá qué está pasando]\n${diagnostics}`,
+    )}`;
 
     const canOpen = await Linking.canOpenURL(url);
     if (canOpen) await Linking.openURL(url);
@@ -93,8 +100,8 @@ export default function SoporteScreen() {
 
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={[styles.intro, { color: colors.muted }]}>
-          Estas son las consultas más frecuentes. Si no encontrás tu caso, escribinos y te
-          respondemos a la brevedad.
+          Encontrá respuestas rápidas sobre acceso, contenido, uso sin conexión y cambios de
+          dispositivo. Si no encontrás lo que necesitás, escribinos desde esta misma pantalla.
         </Text>
 
         <View style={styles.faqList}>
@@ -138,13 +145,20 @@ export default function SoporteScreen() {
         >
           <AppIcon name="support" size={26} color={colors.primary} />
           <Text style={[styles.contactTitle, { color: colors.foreground }]}>
-            ¿Seguís con dudas?
+            ¿Necesitás más ayuda?
           </Text>
+
           <Text style={[styles.contactBody, { color: colors.muted }]}>
-            Escribinos a {SUPPORT_EMAIL} y contanos qué pasó. Adjuntamos automáticamente algunos
-            datos técnicos para poder ayudarte más rápido.
+            Escribinos a {SUPPORT_EMAIL} y contanos qué problema estás teniendo. Para ayudarte más
+            rápido, el mensaje incluye automáticamente algunos datos técnicos de la app y del
+            dispositivo.
           </Text>
-          <AppButton label="Escribir a soporte" icon="mail" onPress={handleContact} />
+
+          <AppButton
+            label="Contactar a soporte"
+            icon="mail"
+            onPress={handleContact}
+          />
         </View>
       </ScrollView>
     </ScreenContainer>
