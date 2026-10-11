@@ -80,12 +80,12 @@ export async function getCatalogState(): Promise<SyncStateResult> {
   const now = new Date().toISOString();
 
   if (!db) {
-    return { catalogVersion: 0, publishedRecipes: 0, lastChangeAt: now, serverTime: now };
+    return { catalogVersion: 0, publishedRecipes: 0, lastChangeAt: now, serverTime: now, recipeFormatVersion: 2 };
   }
 
   const rows = await db.select().from(catalogState).where(eq(catalogState.id, 1)).limit(1);
   if (rows.length === 0) {
-    return { catalogVersion: 0, publishedRecipes: 0, lastChangeAt: now, serverTime: now };
+    return { catalogVersion: 0, publishedRecipes: 0, lastChangeAt: now, serverTime: now, recipeFormatVersion: 2 };
   }
 
   return {
@@ -93,6 +93,7 @@ export async function getCatalogState(): Promise<SyncStateResult> {
     publishedRecipes: rows[0].publishedRecipes,
     lastChangeAt: new Date(rows[0].lastChangeAt).toISOString(),
     serverTime: now,
+    recipeFormatVersion: 2,
   };
 }
 
@@ -135,7 +136,10 @@ export async function bumpCatalogVersion(): Promise<number> {
  * Cuando `since` es nulo se entrega el catálogo completo, que es el caso de la
  * primera sincronización tras instalar la aplicación.
  */
-export async function pullCatalogChanges(since: Date | null): Promise<SyncPullResult> {
+export async function pullCatalogChanges(
+  since: Date | null,
+  recipeFormatVersion: 1 | 2 = 1,
+): Promise<SyncPullResult> {
   const db = await getDb();
   const serverTime = new Date().toISOString();
   const state = await getCatalogState();
@@ -144,6 +148,7 @@ export async function pullCatalogChanges(since: Date | null): Promise<SyncPullRe
     serverTime,
     catalogVersion: state.catalogVersion,
     full: since === null,
+    recipeFormatVersion,
     recipes: [],
     ingredients: [],
     categories: [],
@@ -265,6 +270,8 @@ export async function pullCatalogChanges(since: Date | null): Promise<SyncPullRe
         db
           .select({
             recipeId: recipeIngredients.recipeId,
+            type: recipeIngredients.type,
+            groupTitle: recipeIngredients.groupTitle,
             slug: ingredients.slug,
             quantity: recipeIngredients.quantity,
             unit: recipeIngredients.unit,
@@ -272,7 +279,7 @@ export async function pullCatalogChanges(since: Date | null): Promise<SyncPullRe
             sortOrder: recipeIngredients.sortOrder,
           })
           .from(recipeIngredients)
-          .innerJoin(ingredients, eq(ingredients.id, recipeIngredients.ingredientId))
+          .leftJoin(ingredients, eq(ingredients.id, recipeIngredients.ingredientId))
           .where(inArray(recipeIngredients.recipeId, recipeIds)),
         db.select().from(recipeSteps).where(inArray(recipeSteps.recipeId, recipeIds)),
         db
@@ -342,6 +349,49 @@ export async function pullCatalogChanges(since: Date | null): Promise<SyncPullRe
         });
       }
 
+      const ingredientRowsForRecipe = (ingredientsByRecipe.get(row.id) ?? [])
+        .slice()
+        .sort((a, b) => a.sortOrder - b.sortOrder);
+      const stepRowsForRecipe = (stepsByRecipe.get(row.id) ?? [])
+        .slice()
+        .sort((a, b) => (a.sortOrder ?? a.stepNumber) - (b.sortOrder ?? b.stepNumber));
+
+      const ingredientsForSync = ingredientRowsForRecipe
+        .filter((item) => item.type === "group" || item.slug !== null)
+        .map((item) => {
+          if (recipeFormatVersion === 2 && item.type === "group") {
+            return { type: "group" as const, title: item.groupTitle ?? "", sortOrder: item.sortOrder };
+          }
+          if (item.type === "group") return null;
+          return {
+            ...(recipeFormatVersion === 2 ? { type: "ingredient" as const } : {}),
+            ingredientSlug: item.slug!,
+            quantity: parseQuantity(item.quantity),
+            unit: item.unit ?? "",
+            note: item.note ?? null,
+            sortOrder: item.sortOrder,
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null);
+
+      const stepsForSync = recipeFormatVersion === 2
+        ? stepRowsForRecipe.map((item) => item.type === "group"
+          ? { type: "group" as const, title: item.groupTitle ?? "", sortOrder: item.sortOrder ?? item.stepNumber }
+          : {
+              type: "step" as const,
+              sortOrder: item.sortOrder ?? item.stepNumber,
+              stepNumber: item.stepNumber,
+              description: item.description,
+              durationMinutes: item.durationMinutes ?? null,
+            })
+        : stepRowsForRecipe
+            .filter((item) => item.type !== "group")
+            .map((item, index) => ({
+              stepNumber: index + 1,
+              description: item.description,
+              durationMinutes: item.durationMinutes ?? null,
+            }));
+
       syncRecipes.push({
         slug: row.slug,
         title: row.title,
@@ -366,24 +416,11 @@ export async function pullCatalogChanges(since: Date | null): Promise<SyncPullRe
         portions: row.portions,
         nutrition: parseNutrition(row.nutrition),
         tips: row.tips ?? null,
+        ...(recipeFormatVersion === 2 ? { extraTips: row.extraTips ?? null } : {}),
         featured: row.featured,
         communitySaves: row.communitySaves,
-        ingredients: (ingredientsByRecipe.get(row.id) ?? [])
-          .sort((a, b) => a.sortOrder - b.sortOrder)
-          .map((item) => ({
-            ingredientSlug: item.slug,
-            quantity: parseQuantity(item.quantity),
-            unit: item.unit,
-            note: item.note ?? null,
-            sortOrder: item.sortOrder,
-          })),
-        steps: (stepsByRecipe.get(row.id) ?? [])
-          .sort((a, b) => a.stepNumber - b.stepNumber)
-          .map((item) => ({
-            stepNumber: item.stepNumber,
-            description: item.description,
-            durationMinutes: item.durationMinutes ?? null,
-          })),
+        ingredients: ingredientsForSync,
+        steps: stepsForSync,
         version: row.version,
         updatedAt: new Date(row.updatedAt).toISOString(),
       });
@@ -399,6 +436,7 @@ export async function pullCatalogChanges(since: Date | null): Promise<SyncPullRe
     serverTime,
     catalogVersion: state.catalogVersion,
     full: since === null,
+    recipeFormatVersion,
     recipes: syncRecipes,
     ingredients: syncIngredients,
     categories: syncCategories,

@@ -252,6 +252,78 @@ function describeFailure(status: number, detail: string): string {
   return `Resend respondió con el código ${status}`;
 }
 
+export interface TransactionalEmailInput {
+  email: string;
+  subject: string;
+  html: string;
+  text: string;
+  /** Stable key supplied to Resend so retries cannot create another email. */
+  idempotencyKey: string;
+}
+
+export type TransactionalEmailOutcome =
+  | { delivered: true; providerId: string | null }
+  | { delivered: false; error: string };
+
+/**
+ * Sends a non-OTP transactional email through the existing Resend account.
+ *
+ * This function deliberately does not alter the OTP delivery diagnostics:
+ * a failed Shopify delivery email must not make the access-code panel report
+ * that OTP delivery is broken. The caller persists its own audit state.
+ */
+export async function sendTransactionalEmail(
+  input: TransactionalEmailInput,
+): Promise<TransactionalEmailOutcome> {
+  const apiKey = readApiKey();
+  if (!apiKey) return { delivered: false, error: "Falta configurar RESEND_API_KEY" };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": input.idempotencyKey,
+      },
+      body: JSON.stringify({
+        from: readFromAddress(),
+        to: [input.email],
+        subject: input.subject,
+        html: input.html,
+        text: input.text,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => response.statusText);
+      console.error("[mailer] Resend rechazó el email transaccional:", response.status, detail);
+      return { delivered: false, error: describeFailure(response.status, detail) };
+    }
+
+    const payload = (await response.json().catch(() => null)) as { id?: unknown } | null;
+    return {
+      delivered: true,
+      providerId: typeof payload?.id === "string" ? payload.id.slice(0, 128) : null,
+    };
+  } catch (error) {
+    console.error("[mailer] No se pudo enviar el email transaccional:", error);
+    return {
+      delivered: false,
+      error:
+        error instanceof Error && error.name === "AbortError"
+          ? "El proveedor de correo no respondió en el tiempo esperado"
+          : "No se pudo contactar al proveedor de correo",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /**
  * Entrega asistida: avisa al administrador para que pueda pasar el código.
  *

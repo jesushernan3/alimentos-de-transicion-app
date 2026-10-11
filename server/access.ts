@@ -5,6 +5,7 @@ import {
   accessCodes,
   licenseEvents,
   licenses,
+  licenseDevices,
   sessions,
   users,
   type License,
@@ -12,7 +13,20 @@ import {
 } from "../drizzle/schema";
 import type { AccessResult, LicenseStatus } from "../shared/catalog-types";
 import { getDb } from "./db";
-import { deliverAccessCodeWithOutcome, isEmailProviderConfigured } from "./mailer";
+import {
+  attachDeviceToSession,
+  countActiveLicenseDevices,
+  DeviceAccessError,
+  getLicenseDevice,
+  createDeviceStatusProof,
+  readDeviceStatusProof,
+  registerLicenseDevice,
+  releaseDeviceSession,
+  touchLicenseDevice,
+  type DeviceMetadata,
+} from "./device-access";
+
+import { deliverAccessCodeWithOutcome } from "./mailer";
 import { isReviewEmail, matchesReviewCode } from "./review-access";
 
 /** Vigencia del código de un solo uso. */
@@ -50,6 +64,11 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+/** Validación compartida por el panel y las integraciones de licencias. */
+export function isValidEmail(email: string): boolean {
+  return email.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
 function generateCode(): string {
   // 100000–999999: seis dígitos sin ceros a la izquierda, que confunden al leer.
   return String(crypto.randomInt(100000, 1000000));
@@ -61,7 +80,7 @@ function generateToken(): string {
 
 export interface RequestCodeResult {
   sent: boolean;
-  /** `true` cuando no hay proveedor de correo y el código queda en el panel. */
+  /** Compatibilidad pública: siempre false, sin revelar el resultado del envío. */
   manualDelivery: boolean;
   cooldownSeconds?: number;
   expiresAt: string;
@@ -127,7 +146,7 @@ export async function requestAccessCode(
       await padDuration(startedAt);
       return {
         sent: false,
-        manualDelivery: !isEmailProviderConfigured(),
+        manualDelivery: false,
         cooldownSeconds: Math.ceil(REQUEST_COOLDOWN_SECONDS - elapsed),
         expiresAt: new Date(recent[0].expiresAt).toISOString(),
       };
@@ -189,7 +208,14 @@ export async function requestAccessCode(
 
   const codeId = Number((inserted as unknown as { insertId?: number | string })?.insertId ?? 0);
 
-  const outcome = await deliverAccessCodeWithOutcome({ email: normalized, code, expiresAt });
+  let outcome: Awaited<ReturnType<typeof deliverAccessCodeWithOutcome>>;
+  try {
+    outcome = await deliverAccessCodeWithOutcome({ email: normalized, code, expiresAt });
+  } catch {
+    // No propagar excepciones del envío/notificación al contrato público.
+    console.warn("[acceso] Fallo inesperado del proveedor; entrega asistida disponible");
+    outcome = { delivered: false, channel: "manual" };
+  }
 
   // Si el correo no salió, el código tiene que quedar legible en el panel: de lo
   // contrario la persona no tendría ninguna manera de entrar. Cuando sí salió no
@@ -212,11 +238,9 @@ export async function requestAccessCode(
 
   await padDuration(startedAt);
 
-  return {
-    sent: true,
-    manualDelivery: !outcome.delivered,
-    expiresAt: expiresAt.toISOString(),
-  };
+  // La asistencia manual sigue disponible en /admin, nunca en el contrato
+  // público: un fallo del proveedor no debe revelar si el correo tiene licencia.
+  return acceptedResponse();
 }
 
 /** Busca la licencia más relevante de un correo. */
@@ -276,7 +300,7 @@ async function upsertEmailUser(email: string): Promise<User> {
 export interface VerifyCodeOutcome {
   result: AccessResult;
   /** Motivo del rechazo, para que la aplicación muestre el mensaje correcto. */
-  reason?: "invalid-code" | "expired" | "too-many-attempts" | "no-license";
+  reason?: "invalid-code" | "expired" | "too-many-attempts" | "no-license" | "device-limit" | "device-revoked" | "device-required" | "device-released";
 }
 
 /**
@@ -289,7 +313,7 @@ export interface VerifyCodeOutcome {
 export async function verifyAccessCode(
   email: string,
   code: string,
-  device?: { label?: string; platform?: string },
+  device?: DeviceMetadata,
 ): Promise<VerifyCodeOutcome> {
   const db = await getDb();
   if (!db) throw new Error("Base de datos no disponible");
@@ -322,50 +346,31 @@ export async function verifyAccessCode(
     return issueSessionFor(normalized, now, device);
   }
 
-  const rows = await db
-    .select()
-    .from(accessCodes)
-    .where(
-      and(
-        eq(accessCodes.email, normalized),
-        isNull(accessCodes.consumedAt),
-        // Las filas de relleno (`pending`) existen sólo para que el freno entre
-        // solicitudes no revele si el correo tiene licencia. No corresponden a
-        // ningún código enviado, así que se excluyen: si no, la fila de relleno
-        // de un intento anterior sería «el último código» y haría fracasar el
-        // ingreso de alguien que acaba de recibir su licencia.
-        ne(accessCodes.deliveredVia, "pending"),
-      ),
-    )
-    .orderBy(desc(accessCodes.createdAt))
-    .limit(1);
+  const rejection = await db.transaction(async (tx): Promise<VerifyCodeOutcome["reason"] | null> => {
+    // Lectura bloqueante actual (también en TiDB): después de esperar el lock
+    // se observa consumedAt/attempts actualizado, no un snapshot previo.
+    // Se incluye el último consumido para que no vuelva a habilitar un OTP viejo.
+    const [record] = await tx.select().from(accessCodes).where(and(
+      eq(accessCodes.email, normalized), ne(accessCodes.deliveredVia, "pending"),
+    )).orderBy(desc(accessCodes.createdAt), desc(accessCodes.id)).limit(1).for("update");
 
-  const notAuthorized = (reason: VerifyCodeOutcome["reason"]): VerifyCodeOutcome =>
-    notAuthorizedFor(reason);
-
-  if (rows.length === 0) return notAuthorized("invalid-code");
-
-  const record = rows[0];
-
-  if (new Date(record.expiresAt).getTime() <= now.getTime()) {
-    return notAuthorized("expired");
-  }
-
-  if (record.attempts >= MAX_CODE_ATTEMPTS) {
-    return notAuthorized("too-many-attempts");
-  }
-
-  if (record.codeHash !== hash(code.trim())) {
-    await db
-      .update(accessCodes)
-      .set({ attempts: record.attempts + 1 })
+    if (!record || record.consumedAt) return "invalid-code";
+    const verifiedAt = new Date();
+    if (new Date(record.expiresAt).getTime() <= verifiedAt.getTime()) return "expired";
+    if (record.attempts >= MAX_CODE_ATTEMPTS) return "too-many-attempts";
+    if (record.codeHash !== hash(code.trim())) {
+      await tx.update(accessCodes).set({ attempts: sql`${accessCodes.attempts} + 1` })
+        .where(eq(accessCodes.id, record.id));
+      return "invalid-code";
+    }
+    await tx.update(accessCodes).set({ consumedAt: verifiedAt })
       .where(eq(accessCodes.id, record.id));
-    return notAuthorized("invalid-code");
-  }
-
-  await db.update(accessCodes).set({ consumedAt: now }).where(eq(accessCodes.id, record.id));
-
-  return issueSessionFor(normalized, now, device);
+    return null;
+  });
+  if (rejection) return notAuthorizedFor(rejection);
+  // Sólo el ganador llega a emitir sesión. No retener el lock OTP durante
+  // registro de dispositivos, para respetar el orden de locks existente.
+  return issueSessionFor(normalized, new Date(), device);
 }
 
 /**
@@ -379,7 +384,7 @@ export async function verifyAccessCode(
 async function issueSessionFor(
   normalized: string,
   now: Date,
-  device?: { label?: string; platform?: string },
+  device?: DeviceMetadata,
 ): Promise<VerifyCodeOutcome> {
   const db = await getDb();
   if (!db) throw new Error("Base de datos no disponible");
@@ -387,7 +392,7 @@ async function issueSessionFor(
   const user = await upsertEmailUser(normalized);
   const license = await findLicenseForEmail(normalized);
 
-  if (!isLicenseUsable(license)) {
+  if (!license || !isLicenseUsable(license)) {
     return {
       reason: "no-license",
       result: {
@@ -401,21 +406,110 @@ async function issueSessionFor(
     };
   }
 
-  // Vincula la licencia con el usuario la primera vez que entra.
-  if (license && !license.userId) {
-    await db
-      .update(licenses)
-      .set({ userId: user.id, activatedAt: license.activatedAt ?? now })
-      .where(eq(licenses.id, license.id));
+  if (
+    !device?.deviceId?.trim() &&
+    !isReviewEmail(normalized)
+  ) {
+    return {
+      reason: "device-required",
+      result: {
+        authorized: false,
+        status: license.status as LicenseStatus,
+        email: normalized,
+        name: user.name ?? null,
+        expiresAt: license.expiresAt
+          ? new Date(license.expiresAt).toISOString()
+          : null,
+        checkedAt: now.toISOString(),
+        reason: "device-required",
+      },
+    };
+  }
+
+  let licenseDeviceId: number | null = null;
+  if (device?.deviceId) {
+    try {
+      const registered = await registerLicenseDevice(license, device, {
+        // Google Play usa una cuenta fija de revisión. Se registra igual para
+        // soporte, pero nunca queda bloqueada por el cupo de compradores.
+        enforceLimit: !isReviewEmail(normalized),
+      });
+      licenseDeviceId = registered.id;
+    } catch (error) {
+      if (error instanceof DeviceAccessError) {
+        let deviceStatusProof: string | undefined;
+        if (error.reason === "device-revoked") {
+          const [revokedDevice] = await db.select().from(licenseDevices).where(and(
+            eq(licenseDevices.licenseId, license.id), eq(licenseDevices.deviceId, device.deviceId),
+          )).limit(1);
+          if (revokedDevice && process.env.JWT_SECRET) deviceStatusProof = createDeviceStatusProof(revokedDevice.id);
+        }
+        return {
+          reason: error.reason,
+          result: {
+            authorized: false,
+            status: license.status as LicenseStatus,
+            email: normalized,
+            name: user.name ?? null,
+            expiresAt: license.expiresAt
+              ? new Date(license.expiresAt).toISOString()
+              : null,
+            checkedAt: now.toISOString(),
+            reason: error.reason,
+            deviceStatusProof,
+          },
+        };
+      }
+      throw error;
+    }
   }
 
   const token = generateToken();
-  await db.insert(sessions).values({
-    userId: user.id,
-    tokenHash: hash(token),
-    deviceLabel: device?.label ?? null,
-    platform: device?.platform ?? null,
+  try {
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM licenses WHERE id = ${license.id} FOR UPDATE`);
+      if (licenseDeviceId) {
+        const [currentDevice] = await tx.select().from(licenseDevices)
+          .where(eq(licenseDevices.id, licenseDeviceId)).limit(1).for("update");
+        if (!currentDevice || currentDevice.revokedAt || currentDevice.releasedAt) {
+          throw new DeviceAccessError(currentDevice && !currentDevice.revokedAt && currentDevice.releasedAt ? "device-released" : "device-revoked", "Ingresá nuevamente o contactá a soporte.");
+        }
+      }
+    // Este es el único punto que registra un login real: sólo se llega después
+    // de demostrar la identidad y comprobar una licencia utilizable. Restaurar
+    // una sesión existente pasa por `resolveSession` y nunca toca estas marcas.
+    await tx
+      .update(licenses)
+      .set({
+        userId: license.userId ?? user.id,
+        activatedAt: license.activatedAt ?? now,
+        firstLoginAt: sql`COALESCE(${licenses.firstLoginAt}, ${now})`,
+        lastLoginAt: now,
+        accessTrackingStartedAt: sql`COALESCE(${licenses.accessTrackingStartedAt}, ${now})`,
+      })
+      .where(eq(licenses.id, license.id));
+
+    await tx.insert(sessions).values({
+      userId: user.id,
+      tokenHash: hash(token),
+      deviceLabel: device?.label ?? null,
+      platform: device?.platform ?? null,
+      licenseDeviceId,
+    });
   });
+  } catch (error) {
+    if (error instanceof DeviceAccessError) {
+      return { reason: error.reason, result: {
+        authorized: false, status: license.status as LicenseStatus,
+        email: normalized, name: user.name ?? null,
+        expiresAt: license.expiresAt ? new Date(license.expiresAt).toISOString() : null,
+        checkedAt: now.toISOString(), reason: error.reason,
+        deviceStatusProof: error.reason === "device-revoked" && licenseDeviceId && process.env.JWT_SECRET
+          ? createDeviceStatusProof(licenseDeviceId) : undefined,
+      } };
+    }
+    throw error;
+  }
 
   return {
     result: {
@@ -435,6 +529,7 @@ export interface SessionUser {
   email: string;
   name: string | null;
   sessionId: number;
+  licenseDeviceId: number | null;
 }
 
 /**
@@ -487,6 +582,7 @@ export async function resolveSession(token: string): Promise<SessionUser | null>
       userId: users.id,
       email: users.email,
       name: users.name,
+      licenseDeviceId: sessions.licenseDeviceId,
       lastSeenAt: sessions.lastSeenAt,
       createdAt: sessions.createdAt,
     })
@@ -511,6 +607,20 @@ export async function resolveSession(token: string): Promise<SessionUser | null>
     return null;
   }
 
+  // Una revocación administrativa invalida también las sesiones que todavía
+  // tienen un token local. Se marca la sesión para que el estado quede auditado.
+  if (row.licenseDeviceId) {
+    const device = await getLicenseDevice(row.licenseDeviceId);
+    if (!device || device.revokedAt || device.releasedAt) {
+      await db
+        .update(sessions)
+        .set({ revokedAt: new Date() })
+        .where(eq(sessions.id, row.sessionId));
+      return null;
+    }
+    await touchLicenseDevice(device.id);
+  }
+
   // Marca de actividad, útil para el panel de usuarios y para el soporte.
   await db.update(sessions).set({ lastSeenAt: new Date() }).where(eq(sessions.id, row.sessionId));
 
@@ -519,12 +629,47 @@ export async function resolveSession(token: string): Promise<SessionUser | null>
     userId: row.userId,
     email: row.email ?? "",
     name: row.name ?? null,
+    licenseDeviceId: row.licenseDeviceId ?? null,
   };
 }
 
 /** Revalida la licencia de una sesión existente. */
-export async function checkAccessStatus(token: string): Promise<AccessResult> {
+export async function checkAccessStatus(
+  token: string,
+  device?: DeviceMetadata,
+): Promise<AccessResult> {
   const now = new Date();
+  // Conservar la causa del rechazo aun cuando /admin ya revocó las sesiones.
+  // El token se usa sólo como prueba de asociación, nunca para autorizar de nuevo.
+  const db = await getDb();
+  if (!db) throw new Error("Base de datos no disponible");
+  const proofDeviceId = readDeviceStatusProof(token);
+  if (proofDeviceId !== null) {
+    const knownDevice = await getLicenseDevice(proofDeviceId);
+    if (knownDevice) {
+      return { authorized: false, status: "none", email: "", name: null,
+        expiresAt: null, checkedAt: now.toISOString(),
+        reason: knownDevice.revokedAt ? "device-revoked" : "device-reactivated" };
+    }
+  }
+  const [knownSession] = await db.select({
+    licenseDeviceId: sessions.licenseDeviceId,
+    revokedAt: sessions.revokedAt,
+  }).from(sessions).where(eq(sessions.tokenHash, hash(token))).limit(1);
+  if (knownSession?.licenseDeviceId) {
+    const knownDevice = await getLicenseDevice(knownSession.licenseDeviceId);
+    if (knownDevice) {
+      if (knownDevice.revokedAt || knownDevice.releasedAt || knownSession.revokedAt) {
+        return {
+          authorized: false, status: "none", email: "", name: null,
+          expiresAt: null, checkedAt: now.toISOString(),
+          // La reactivación habilita pedir un OTP nuevo, no restaura este token.
+          reason: knownDevice.revokedAt ? "device-revoked" : "device-reactivated",
+          deviceStatusProof: process.env.JWT_SECRET ? createDeviceStatusProof(knownDevice.id) : undefined,
+        };
+      }
+    }
+  }
   const session = await resolveSession(token);
 
   if (!session) {
@@ -541,24 +686,72 @@ export async function checkAccessStatus(token: string): Promise<AccessResult> {
   const license = await findLicenseForEmail(session.email);
   const usable = isLicenseUsable(license);
 
+  // Las sesiones creadas antes de la migración tienen `licenseDeviceId` nulo.
+  // En el próximo uso autenticado de la app nueva se registran progresivamente.
+  // Si la sesión ya está ligada a otro UUID, una reinstalación puede ocupar un
+  // nuevo cupo: el token por sí solo no convierte al hardware en credencial.
+  if (usable && license && device?.deviceId) {
+    const bound = session.licenseDeviceId
+      ? await getLicenseDevice(session.licenseDeviceId)
+      : null;
+    const sameDevice = bound?.deviceId === device.deviceId;
+
+    if (!sameDevice) {
+      try {
+        const registered = await registerLicenseDevice(license, device, {
+          enforceLimit: !isReviewEmail(session.email),
+          allowReleased: false,
+        });
+        await attachDeviceToSession(session.sessionId, registered.id);
+        await touchLicenseDevice(registered.id, now);
+      } catch (error) {
+        if (error instanceof DeviceAccessError) {
+          let deviceStatusProof: string | undefined;
+          if (error.reason === "device-revoked") {
+            const [target] = await db.select().from(licenseDevices).where(and(
+              eq(licenseDevices.licenseId, license.id), eq(licenseDevices.deviceId, device.deviceId),
+            )).limit(1);
+            if (target) {
+              await db.update(sessions).set({ revokedAt: now, licenseDeviceId: target.id })
+                .where(eq(sessions.id, session.sessionId));
+              if (process.env.JWT_SECRET) deviceStatusProof = createDeviceStatusProof(target.id);
+            }
+          }
+          return {
+            authorized: false,
+            status: license.status as LicenseStatus,
+            email: session.email,
+            name: session.name,
+            expiresAt: license.expiresAt
+              ? new Date(license.expiresAt).toISOString()
+              : null,
+            checkedAt: now.toISOString(),
+            reason: error.reason,
+            deviceStatusProof,
+          };
+        }
+        throw error;
+      }
+    } else if (bound) {
+      await registerLicenseDevice(license, device, { enforceLimit: !isReviewEmail(session.email), allowReleased: false });
+    }
+  }
+
   return {
     authorized: usable,
     status: license ? (license.status as LicenseStatus) : "none",
     email: session.email,
     name: session.name,
-    expiresAt: license?.expiresAt ? new Date(license.expiresAt).toISOString() : null,
+    expiresAt: license?.expiresAt
+      ? new Date(license.expiresAt).toISOString()
+      : null,
     checkedAt: now.toISOString(),
   };
 }
 
-/** Invalida la sesión del dispositivo actual. */
-export async function revokeSession(token: string): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  await db
-    .update(sessions)
-    .set({ revokedAt: new Date() })
-    .where(eq(sessions.tokenHash, hash(token)));
+/** Invalida sesiones de esta instalación y libera cupo sin borrar historial. */
+export async function revokeSession(token: string, deviceId?: string): Promise<void> {
+  await releaseDeviceSession(hash(token), deviceId);
 }
 
 /* ------------------------------------------------------------------ */
@@ -591,6 +784,11 @@ export async function grantLicense(input: GrantLicenseInput): Promise<License> {
 
   if (existing.length > 0) {
     const current = existing[0];
+    const startsReliableTracking =
+      current.status !== "active" &&
+      !current.firstLoginAt &&
+      !current.accessTrackingStartedAt;
+
     await db
       .update(licenses)
       .set({
@@ -600,6 +798,10 @@ export async function grantLicense(input: GrantLicenseInput): Promise<License> {
         notes: input.notes ?? current.notes,
         expiresAt: input.expiresAt ?? current.expiresAt,
         activatedAt: current.activatedAt ?? now,
+        // Una licencia histórica activa sigue en «Sin datos»: volver a ejecutar
+        // un alta idempotente no inventa que estaba pendiente. En cambio, una
+        // reactivación abre un período nuevo que sí podemos observar desde hoy.
+        accessTrackingStartedAt: startsReliableTracking ? now : current.accessTrackingStartedAt,
       })
       .where(eq(licenses.id, current.id));
 
@@ -623,6 +825,7 @@ export async function grantLicense(input: GrantLicenseInput): Promise<License> {
     expiresAt: input.expiresAt ?? null,
     status: "active",
     activatedAt: now,
+    accessTrackingStartedAt: now,
   });
 
   const created = await db
@@ -657,7 +860,19 @@ export async function setLicenseStatus(
   const rows = await db.select().from(licenses).where(eq(licenses.email, normalized)).limit(1);
   if (rows.length === 0) return;
 
-  await db.update(licenses).set({ status }).where(eq(licenses.id, rows[0].id));
+  const startsReliableTracking =
+    status === "active" &&
+    rows[0].status !== "active" &&
+    !rows[0].firstLoginAt &&
+    !rows[0].accessTrackingStartedAt;
+
+  await db
+    .update(licenses)
+    .set({
+      status,
+      ...(startsReliableTracking ? { accessTrackingStartedAt: new Date() } : {}),
+    })
+    .where(eq(licenses.id, rows[0].id));
 
   const action =
     status === "active" ? "reactivated" : status === "refunded" ? "refunded" : "revoked";
@@ -679,6 +894,26 @@ export async function setLicenseStatus(
   }
 }
 
+export type AccessUsageStatus = "pending" | "used" | "unknown";
+
+/**
+ * Estado derivado de evidencia real, nunca de una etiqueta independiente.
+ *
+ * - `used`: hay al menos una autenticación exitosa registrada.
+ * - `pending`: el seguimiento ya existía cuando se autorizó/reactivó y todavía
+ *   no ocurrió ningún login.
+ * - `unknown`: licencia histórica sin evidencia suficiente en un sentido u otro.
+ */
+export function deriveAccessUsageStatus(input: {
+  firstLoginAt?: Date | string | null;
+  lastLoginAt?: Date | string | null;
+  accessTrackingStartedAt?: Date | string | null;
+}): AccessUsageStatus {
+  if (input.firstLoginAt || input.lastLoginAt) return "used";
+  if (input.accessTrackingStartedAt) return "pending";
+  return "unknown";
+}
+
 /** Listado de usuarios con su licencia, para el panel administrativo. */
 export async function listUsersWithLicenses(search?: string) {
   const db = await getDb();
@@ -687,26 +922,38 @@ export async function listUsersWithLicenses(search?: string) {
   const rows = await db
     .select({
       licenseId: licenses.id,
+      activeDeviceCount: sql<number>`(SELECT COUNT(*) FROM licenseDevices d WHERE d.licenseId = ${licenses.id} AND d.revokedAt IS NULL AND d.releasedAt IS NULL)`,
       email: licenses.email,
       status: licenses.status,
       source: licenses.source,
       externalOrderId: licenses.externalOrderId,
-      activatedAt: licenses.activatedAt,
+      grantedAt: licenses.activatedAt,
       expiresAt: licenses.expiresAt,
       createdAt: licenses.createdAt,
       notes: licenses.notes,
+      firstLoginAt: licenses.firstLoginAt,
+      lastLoginAt: licenses.lastLoginAt,
+      // Compatibilidad con una copia anterior del panel que todavía usaba este
+      // nombre. El valor ya es login real, no actividad de una sesión restaurada.
+      lastSeenAt: licenses.lastLoginAt,
+      accessTrackingStartedAt: licenses.accessTrackingStartedAt,
       userId: users.id,
       name: users.name,
-      lastSignedIn: users.lastSignedIn,
     })
     .from(licenses)
     .leftJoin(users, eq(users.id, licenses.userId))
     .orderBy(desc(licenses.updatedAt))
     .limit(500);
 
-  if (!search) return rows;
+  const withAccessStatus = rows.map((row) => ({
+    ...row,
+    accessStatus: deriveAccessUsageStatus(row),
+    activeDeviceCount: Number(row.activeDeviceCount),
+  }));
+
+  if (!search) return withAccessStatus;
   const needle = search.trim().toLowerCase();
-  return rows.filter((row) => row.email.toLowerCase().includes(needle));
+  return withAccessStatus.filter((row) => row.email.toLowerCase().includes(needle));
 }
 
 /** Códigos pendientes, para que el administrador pueda asistir por soporte. */
@@ -722,12 +969,24 @@ export async function listPendingCodes() {
     .limit(50);
 }
 
-/** Recuento de licencias por estado, para el resumen del panel. */
+/**
+ * Resumen actual de accesos, directamente desde la fuente de verdad del login.
+ * Un acceso no vigente (revocado, reembolsado, pendiente o vencido) es inactivo;
+ * los usuarios son correos únicos, no sesiones, pedidos ni eventos de licencia.
+ */
 export async function licenseSummary() {
   const db = await getDb();
-  if (!db) return [];
-  return db
-    .select({ status: licenses.status, total: sql<number>`count(*)` })
-    .from(licenses)
-    .groupBy(licenses.status);
+  if (!db) throw new Error("Base de datos no disponible");
+  const now = new Date();
+  const [counts] = await db.select({
+    active: sql<number>`COALESCE(SUM(CASE WHEN ${licenses.status} = 'active' AND (${licenses.expiresAt} IS NULL OR ${licenses.expiresAt} > ${now}) THEN 1 ELSE 0 END), 0)`,
+    revoked: sql<number>`COALESCE(SUM(CASE WHEN ${licenses.status} = 'active' AND (${licenses.expiresAt} IS NULL OR ${licenses.expiresAt} > ${now}) THEN 0 ELSE 1 END), 0)`,
+    total: sql<number>`COUNT(DISTINCT LOWER(TRIM(${licenses.email})))`,
+  }).from(licenses);
+
+  return {
+    active: Number(counts.active),
+    revoked: Number(counts.revoked),
+    total: Number(counts.total),
+  };
 }

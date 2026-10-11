@@ -19,8 +19,19 @@ import type {
   SyncDietTag,
   SyncIngredient,
   SyncRecipe,
+  SyncRecipeIngredient,
+  SyncRecipeStep,
 } from "@/shared/catalog-types";
-import type { DietTag, Difficulty, Ingredient, MealType, Recipe } from "@/data/types";
+import type {
+  DietTag,
+  Difficulty,
+  Ingredient,
+  MealType,
+  Recipe,
+  RecipeIngredient,
+  RecipeStep,
+} from "@/data/types";
+import { normalizeImageUrl } from "@/lib/resolve-asset-url";
 
 import { getLocalDb } from "./database";
 import * as webFallback from "./web-fallback";
@@ -57,6 +68,7 @@ export interface ApplyChangesInput {
   deletions: SyncDeletion[];
   catalogVersion: number;
   serverTime: string;
+  recipeFormatVersion?: number;
 }
 
 /** Escribe en la base local el lote de cambios recibido del servidor. */
@@ -135,9 +147,9 @@ export async function applyChanges(input: ApplyChangesInput): Promise<void> {
       await db.runAsync(
         `INSERT INTO recipes (
            slug, title, shortDescription, description, imageUrl, thumbUrl, categorySlug,
-           prepTime, cookingTime, totalTime, difficulty, portions, nutrition, tips,
+           prepTime, cookingTime, totalTime, difficulty, portions, nutrition, tips, extraTips,
            featured, communitySaves, updatedAt
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(slug) DO UPDATE SET
            title = excluded.title,
            shortDescription = excluded.shortDescription, description = excluded.description,
@@ -145,7 +157,7 @@ export async function applyChanges(input: ApplyChangesInput): Promise<void> {
            categorySlug = excluded.categorySlug, prepTime = excluded.prepTime,
            cookingTime = excluded.cookingTime, totalTime = excluded.totalTime,
            difficulty = excluded.difficulty, portions = excluded.portions,
-           nutrition = excluded.nutrition, tips = excluded.tips,
+           nutrition = excluded.nutrition, tips = excluded.tips, extraTips = excluded.extraTips,
            featured = excluded.featured, communitySaves = excluded.communitySaves,
            updatedAt = excluded.updatedAt`,
         [
@@ -163,6 +175,7 @@ export async function applyChanges(input: ApplyChangesInput): Promise<void> {
           recipe.portions,
           recipe.nutrition ? JSON.stringify(recipe.nutrition) : null,
           recipe.tips,
+          recipe.extraTips ?? null,
           recipe.featured ? 1 : 0,
           recipe.communitySaves,
           recipe.updatedAt,
@@ -216,20 +229,40 @@ export async function applyChanges(input: ApplyChangesInput): Promise<void> {
         );
       }
 
-      for (const item of recipe.ingredients) {
+      for (const [index, item] of recipe.ingredients.entries()) {
+        const storedItem = recipeIngredientToLocalRow(item, index);
         await db.runAsync(
           `INSERT OR REPLACE INTO recipe_ingredients
-           (recipeSlug, ingredientSlug, quantity, unit, note, sortOrder)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [recipe.slug, item.ingredientSlug, item.quantity, item.unit, item.note, item.sortOrder],
+           (recipeSlug, ingredientSlug, quantity, unit, note, sortOrder, type, groupTitle)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            recipe.slug,
+            storedItem.ingredientSlug,
+            storedItem.quantity,
+            storedItem.unit,
+            storedItem.note,
+            storedItem.sortOrder ?? 0,
+            storedItem.type ?? "ingredient",
+            storedItem.groupTitle ?? null,
+          ],
         );
       }
 
-      for (const step of recipe.steps) {
+      for (const [index, step] of recipe.steps.entries()) {
+        const storedStep = recipeStepToLocalRow(step, index);
         await db.runAsync(
-          `INSERT OR REPLACE INTO recipe_steps (recipeSlug, stepNumber, description, durationMinutes)
-           VALUES (?, ?, ?, ?)`,
-          [recipe.slug, step.stepNumber, step.description, step.durationMinutes],
+          `INSERT OR REPLACE INTO recipe_steps
+           (recipeSlug, stepNumber, description, durationMinutes, type, groupTitle, sortOrder)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            recipe.slug,
+            storedStep.stepNumber,
+            storedStep.description,
+            storedStep.durationMinutes ?? null,
+            storedStep.type ?? "step",
+            storedStep.groupTitle ?? null,
+            storedStep.sortOrder ?? null,
+          ],
         );
       }
 
@@ -274,8 +307,15 @@ export async function applyChanges(input: ApplyChangesInput): Promise<void> {
     }
 
     await db.runAsync(
-      `UPDATE sync_state SET lastSyncAt = ?, lastSuccessAt = ?, catalogVersion = ? WHERE id = 1`,
-      [input.serverTime, new Date().toISOString(), input.catalogVersion],
+      `UPDATE sync_state
+          SET lastSyncAt = ?, lastSuccessAt = ?, catalogVersion = ?, recipeFormatVersion = ?
+        WHERE id = 1`,
+      [
+        input.serverTime,
+        new Date().toISOString(),
+        input.catalogVersion,
+        input.recipeFormatVersion ?? 1,
+      ],
     );
   });
 }
@@ -284,6 +324,7 @@ export interface LocalSyncState {
   lastSyncAt: string | null;
   lastSuccessAt: string | null;
   catalogVersion: number;
+  recipeFormatVersion?: number;
 }
 
 export async function getSyncState(): Promise<LocalSyncState> {
@@ -291,9 +332,9 @@ export async function getSyncState(): Promise<LocalSyncState> {
 
   const db = await getLocalDb();
   const row = await db.getFirstAsync<LocalSyncState>(
-    "SELECT lastSyncAt, lastSuccessAt, catalogVersion FROM sync_state WHERE id = 1",
+    "SELECT lastSyncAt, lastSuccessAt, catalogVersion, recipeFormatVersion FROM sync_state WHERE id = 1",
   );
-  return row ?? { lastSyncAt: null, lastSuccessAt: null, catalogVersion: 0 };
+  return row ?? { lastSyncAt: null, lastSuccessAt: null, catalogVersion: 0, recipeFormatVersion: 1 };
 }
 
 /** Cantidad de recetas guardadas localmente; sirve para saber si hay contenido. */
@@ -305,7 +346,7 @@ export async function countRecipes(): Promise<number> {
   return row?.total ?? 0;
 }
 
-interface RecipeRow {
+export interface RecipeRow {
   slug: string;
   title: string;
   shortDescription: string | null;
@@ -320,6 +361,8 @@ interface RecipeRow {
   portions: number;
   nutrition: string | null;
   tips: string | null;
+  /** Opcional para mantener compatibilidad con fixtures/documentos anteriores a v3. */
+  extraTips?: string | null;
   featured: number;
   communitySaves: number;
   updatedAt: string;
@@ -343,6 +386,78 @@ export interface LocalRecipePhoto {
   altText: string | null;
   sortOrder: number;
   isCover: boolean;
+}
+
+/** Representación persistida de una línea de ingrediente o un encabezado. */
+export interface RecipeIngredientRow {
+  ingredientSlug: string;
+  quantity: number | null;
+  unit: string;
+  note: string | null;
+  sortOrder?: number | null;
+  type?: string | null;
+  groupTitle?: string | null;
+}
+
+/** Representación persistida de un paso o un encabezado. */
+export interface RecipeStepRow {
+  stepNumber: number;
+  description: string;
+  durationMinutes?: number | null;
+  type?: string | null;
+  groupTitle?: string | null;
+  sortOrder?: number | null;
+}
+
+/** Convierte una línea de transporte a la misma fila que usan SQLite y web. */
+export function recipeIngredientToLocalRow(
+  item: SyncRecipeIngredient,
+  _index: number,
+): RecipeIngredientRow {
+  if (item.type === "group" || !("ingredientSlug" in item)) {
+    return {
+      ingredientSlug: "",
+      quantity: null,
+      unit: "",
+      note: null,
+      sortOrder: item.sortOrder,
+      type: "group",
+      groupTitle: item.title,
+    };
+  }
+
+  return {
+    ingredientSlug: item.ingredientSlug,
+    quantity: item.quantity,
+    unit: item.unit,
+    note: item.note,
+    sortOrder: item.sortOrder,
+    type: item.type ?? "ingredient",
+    groupTitle: null,
+  };
+}
+
+/** Convierte un paso de transporte; un grupo usa una PK técnica negativa. */
+export function recipeStepToLocalRow(item: SyncRecipeStep, index: number): RecipeStepRow {
+  if (item.type === "group" || !("stepNumber" in item)) {
+    return {
+      stepNumber: -(index + 1),
+      description: "",
+      durationMinutes: null,
+      type: "group",
+      groupTitle: item.title,
+      sortOrder: item.sortOrder,
+    };
+  }
+
+  return {
+    stepNumber: item.stepNumber,
+    description: item.description,
+    durationMinutes: item.durationMinutes,
+    type: item.type ?? "step",
+    groupTitle: null,
+    sortOrder: item.sortOrder ?? null,
+  };
 }
 
 /**
@@ -380,17 +495,19 @@ export async function getRecipePhotos(slug: string): Promise<LocalRecipePhoto[]>
 
 export function rowToRecipe(
   row: RecipeRow,
-  ingredients: { ingredientSlug: string; quantity: number | null; unit: string; note: string | null }[],
-  steps: { stepNumber: number; description: string }[],
+  ingredients: Array<RecipeIngredientRow | SyncRecipeIngredient>,
+  steps: Array<RecipeStepRow | SyncRecipeStep>,
   diets: string[],
   collections: string[],
 ): LocalRecipe {
+  const imageUrl = normalizeImageUrl(row.imageUrl);
+  const thumbUrl = normalizeImageUrl(row.thumbUrl);
   return {
     id: row.slug,
     slug: row.slug,
     title: row.title,
     description: row.description ?? row.shortDescription ?? "",
-    image: row.thumbUrl ?? row.imageUrl ?? "",
+    image: thumbUrl ?? imageUrl ?? "",
     prepTime: row.prepTime,
     cookingTime: row.cookingTime,
     totalTime: row.totalTime,
@@ -398,22 +515,47 @@ export function rowToRecipe(
     portions: row.portions,
     category: categorySlugToMealType(row.categorySlug),
     dietTags: diets as DietTag[],
-    ingredients: ingredients.map((item) => ({
-      ingredientId: item.ingredientSlug,
-      quantity: item.quantity,
-      unit: item.unit as Recipe["ingredients"][number]["unit"],
-      note: item.note ?? undefined,
-    })),
-    steps,
+    ingredients: ingredients.map(materializeIngredient) as Recipe["ingredients"],
+    steps: steps.map(materializeStep) as Recipe["steps"],
     nutrition: row.nutrition ? JSON.parse(row.nutrition) : null,
     tips: row.tips ?? undefined,
+    extraTips: row.extraTips ?? undefined,
     featured: row.featured === 1,
     communitySaves: row.communitySaves,
     createdAt: row.updatedAt,
     collectionSlugs: collections,
-    imageUrl: row.imageUrl,
-    thumbUrl: row.thumbUrl,
+    imageUrl,
+    thumbUrl,
   };
+}
+
+function materializeIngredient(item: RecipeIngredientRow | SyncRecipeIngredient): RecipeIngredient {
+  if (item.type === "group" || !("ingredientSlug" in item)) {
+    return { type: "group", title: "title" in item ? item.title : item.groupTitle ?? "" };
+  }
+
+  const materialized = {
+    ingredientId: item.ingredientSlug,
+    quantity: item.quantity,
+    unit: item.unit as Recipe["ingredients"][number] extends { unit: infer Unit } ? Unit : string,
+    note: item.note ?? undefined,
+  } as Extract<RecipeIngredient, { ingredientId: string }>;
+
+  return item.type === "ingredient" ? { type: "ingredient", ...materialized } : materialized;
+}
+
+function materializeStep(item: RecipeStepRow | SyncRecipeStep): RecipeStep {
+  if (item.type === "group" || !("stepNumber" in item)) {
+    return { type: "group", title: "title" in item ? item.title : item.groupTitle ?? "" };
+  }
+
+  const materialized = {
+    stepNumber: item.stepNumber,
+    description: item.description,
+    ...(item.sortOrder != null ? { sortOrder: item.sortOrder } : {}),
+  } as Extract<RecipeStep, { stepNumber: number }>;
+
+  return item.type === "step" ? { type: "step", ...materialized } : materialized;
 }
 
 /** Las categorías se nombran en plural; el modelo de comida usa el singular. */
@@ -441,17 +583,11 @@ export async function getAllRecipes(): Promise<LocalRecipe[]> {
   if (rows.length === 0) return [];
 
   const [allIngredients, allSteps, allDiets, allCollections] = await Promise.all([
-    db.getAllAsync<{
-      recipeSlug: string;
-      ingredientSlug: string;
-      quantity: number | null;
-      unit: string;
-      note: string | null;
-    }>(
-      "SELECT recipeSlug, ingredientSlug, quantity, unit, note FROM recipe_ingredients ORDER BY sortOrder",
+    db.getAllAsync<RecipeIngredientRow & { recipeSlug: string }>(
+      "SELECT recipeSlug, ingredientSlug, quantity, unit, note, sortOrder, type, groupTitle FROM recipe_ingredients ORDER BY recipeSlug, sortOrder",
     ),
-    db.getAllAsync<{ recipeSlug: string; stepNumber: number; description: string }>(
-      "SELECT recipeSlug, stepNumber, description FROM recipe_steps ORDER BY stepNumber",
+    db.getAllAsync<RecipeStepRow & { recipeSlug: string }>(
+      "SELECT recipeSlug, stepNumber, description, durationMinutes, type, groupTitle, sortOrder FROM recipe_steps ORDER BY recipeSlug, COALESCE(sortOrder, stepNumber)",
     ),
     db.getAllAsync<{ recipeSlug: string; dietSlug: string }>(
       "SELECT recipeSlug, dietSlug FROM recipe_diet_tags",
@@ -538,7 +674,7 @@ export async function clearCatalog(): Promise<void> {
       await db.runAsync(`DELETE FROM ${table}`);
     }
     await db.runAsync(
-      "UPDATE sync_state SET lastSyncAt = NULL, lastSuccessAt = NULL, catalogVersion = 0 WHERE id = 1",
+      "UPDATE sync_state SET lastSyncAt = NULL, lastSuccessAt = NULL, catalogVersion = 0, recipeFormatVersion = 1 WHERE id = 1",
     );
   });
 }

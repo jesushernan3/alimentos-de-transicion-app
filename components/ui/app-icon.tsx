@@ -57,6 +57,7 @@ export const APP_ICONS = {
   difficulty: "signal-cellular-alt",
   nutrition: "monitor-heart",
   bulb: "lightbulb-outline",
+  photo: "broken-image",
 
   // Categorías
   sunrise: "wb-twilight",

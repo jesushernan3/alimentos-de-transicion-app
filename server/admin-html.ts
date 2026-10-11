@@ -7,6 +7,22 @@
  * despliegue sea idéntico al del servidor.
  */
 
+import { createHash } from "node:crypto";
+
+import { ADMIN_CLIENT_JS } from "./admin-client";
+
+/**
+ * Marca de versión del script del panel, derivada de su propio contenido.
+ *
+ * Se calcula una sola vez al arrancar: si el panel cambia, la marca cambia con
+ * él y el navegador pide el archivo nuevo; si no cambia, la dirección se
+ * mantiene y la copia guardada sigue sirviendo.
+ */
+const ADMIN_ASSET_VERSION = createHash("sha1")
+  .update(ADMIN_CLIENT_JS)
+  .digest("hex")
+  .slice(0, 10);
+
 const BRAND = {
   coral: "#E5714A",
   coralSoft: "#F58A62",
@@ -175,6 +191,10 @@ ${BASE_STYLES}
 
 /** Aplicación del panel: navegación lateral y vistas. */
 function appPage(): string {
+  // Marca de versión en la dirección del script: cuando el panel cambia, la
+  // dirección cambia con él y el navegador descarga la versión nueva en lugar
+  // de reutilizar la que tenía guardada.
+  const assetVersion = ADMIN_ASSET_VERSION;
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -253,6 +273,18 @@ ${BASE_STYLES}
   .dyn-row input, .dyn-row textarea, .dyn-row-step textarea {
     padding: 8px 10px; border: 1px solid ${BRAND.border}; border-radius: 8px; width: 100%;
   }
+  .recipe-ingredient-entry { grid-template-columns: minmax(0, 1fr) 90px 100px auto; }
+  .recipe-ingredient-entry > input { min-width: 0; }
+  .recipe-ingredient-entry > input:nth-of-type(4) { grid-column: 1 / 3; grid-row: 2; }
+  .recipe-ingredient-entry > input:nth-of-type(5) { grid-column: 3; grid-row: 2; }
+  .recipe-ingredient-entry > .dyn-row-actions { grid-column: 4; grid-row: 1 / span 2; }
+  .recipe-step-entry { grid-template-columns: minmax(0, 1fr) 120px auto; }
+  .recipe-step-entry > .step-number { grid-column: 1 / -1; }
+  .recipe-step-entry > textarea { grid-column: 1; min-width: 0; }
+  .recipe-step-entry > input { grid-column: 2; min-width: 0; }
+  .recipe-step-entry > .dyn-row-actions { grid-column: 3; }
+  .recipe-group-entry { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+  .recipe-group-entry > input { min-width: 0; font-weight: 600; }
   .icon-btn {
     width: 32px; height: 32px; border-radius: 8px;
     border: 1px solid ${BRAND.border}; background: #fff; color: ${BRAND.red};
@@ -268,6 +300,23 @@ ${BASE_STYLES}
     .layout { grid-template-columns: 1fr; }
     .sidebar { position: static; height: auto; flex-direction: row; overflow-x: auto; }
     .nav-spacer { display: none; }
+    .users-table-scroll {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior-inline: contain;
+    }
+    .users-table-scroll table { min-width: 900px; }
+  }
+  @media (max-width: 640px) {
+    .recipe-ingredient-entry, .recipe-step-entry { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .recipe-ingredient-entry > input:nth-of-type(1) { grid-column: 1 / -1; }
+    .recipe-ingredient-entry > input:nth-of-type(4) { grid-column: 1 / -1; grid-row: auto; }
+    .recipe-ingredient-entry > input:nth-of-type(5) { grid-column: 1 / -1; grid-row: auto; }
+    .recipe-ingredient-entry > .dyn-row-actions { grid-column: 1 / -1; grid-row: auto; justify-content: flex-end; }
+    .recipe-step-entry > textarea { grid-column: 1 / -1; }
+    .recipe-step-entry > input { grid-column: 1; }
+    .recipe-step-entry > .dyn-row-actions { grid-column: 2; justify-content: flex-end; }
   }
 </style>
 </head>
@@ -283,6 +332,7 @@ ${BASE_STYLES}
     <button class="nav-item" data-view="collections">Colecciones</button>
     <button class="nav-item" data-view="taxonomy">Categorías y dietas</button>
     <button class="nav-item" data-view="import">Importar y exportar</button>
+    <button class="nav-item" data-view="shopify">Reconciliar Shopify</button>
     <button class="nav-item" data-view="users">Usuarios y accesos</button>
     <div class="nav-spacer"></div>
     <button class="nav-item" id="logout">Cerrar sesión</button>
@@ -295,7 +345,7 @@ ${BASE_STYLES}
 </div>
 <div class="toast" id="toast"></div>
 
-<script src="/admin/app.js"></script>
+<script src="/admin/app.js?v=${assetVersion}"></script>
 </body>
 </html>`;
 }

@@ -1,3 +1,4 @@
+import { isRecipeGroup, preparationSteps } from "@/lib/recipe-entries";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
@@ -27,6 +28,7 @@ import {
   dietLabel,
   difficultyLabel,
   formatIngredientLine,
+  formatIngredientParts,
   formatMinutes,
   getRelatedRecipes,
   mealTypeLabel,
@@ -114,7 +116,8 @@ export default function RecipeDetailScreen() {
   }
 
   const favorite = isFavorite(recipe.id);
-  const completedSteps = cookedSteps[recipe.id] ?? [];
+  const validStepNumbers = new Set(preparationSteps(recipe.steps).map(step => step.stepNumber));
+  const completedSteps = (cookedSteps[recipe.id] ?? []).filter(number => validStepNumbers.has(number));
 
   function changePortions(delta: number) {
     if (!recipe) return;
@@ -144,7 +147,7 @@ export default function RecipeDetailScreen() {
       `Sumamos ${drafts.length} ingredientes a tu lista de compras.`,
       [
         { text: "Seguir mirando", style: "cancel" },
-        { text: "Ver lista", onPress: () => router.push("/(tabs)/compras") },
+        { text: "Ver lista", onPress: () => router.push("/lista-compras") },
       ],
     );
   }
@@ -291,16 +294,21 @@ export default function RecipeDetailScreen() {
             </View>
 
             <View style={styles.ingredientList}>
-              {recipe.ingredients.map((item) => {
+              {recipe.ingredients.map((item, index) => {
+                if (isRecipeGroup(item)) return (
+                  <Text key={`ingredient-group-${index}`} accessibilityRole="header" style={[styles.groupHeading, { color: colors.muted }]}>{item.title}</Text>
+                );
                 const ingredient = ingredientsById.get(item.ingredientId);
                 const checked = checkedIngredients.includes(item.ingredientId);
+                const parts = formatIngredientParts(item, ingredient, recipe.portions, portions);
                 return (
                   <Pressable
-                    key={item.ingredientId}
+                    key={`${item.ingredientId}-${index}`}
                     onPress={() => toggleIngredient(item.ingredientId)}
                     accessibilityRole="checkbox"
                     accessibilityState={{ checked }}
                     accessibilityLabel={ingredient?.name ?? item.ingredientId}
+                    accessibilityHint={formatIngredientLine(item, ingredient, recipe.portions, portions)}
                     style={({ pressed }) => [
                       styles.ingredientRow,
                       { borderBottomColor: colors.border },
@@ -312,15 +320,12 @@ export default function RecipeDetailScreen() {
                       size={22}
                       color={checked ? colors.primary : colors.muted}
                     />
-                    <Text
-                      style={[
-                        styles.ingredientText,
-                        { color: checked ? colors.muted : colors.foreground },
-                        checked && styles.ingredientChecked,
-                      ]}
-                    >
-                      {formatIngredientLine(item, ingredient, recipe.portions, portions)}
-                    </Text>
+                    <View style={styles.ingredientContent}>
+                      <View style={[styles.amountBadge, { backgroundColor: colors.surfaceAlt }]} accessible={false}>
+                        <Text style={[styles.amountText, { color: checked ? colors.muted : colors.foreground }, checked && styles.ingredientChecked]}>{parts.amount}</Text>
+                      </View>
+                      <Text style={[styles.ingredientName, { color: checked ? colors.muted : colors.foreground }, checked && styles.ingredientChecked]}>{parts.name}</Text>
+                    </View>
                   </Pressable>
                 );
               })}
@@ -338,6 +343,15 @@ export default function RecipeDetailScreen() {
                 variant="secondary"
                 onPress={handlePlan}
               />
+              <Pressable
+                onPress={() => router.push("/plan-semanal")}
+                accessibilityRole="button"
+                accessibilityLabel="Ver semana"
+                style={({ pressed }) => [styles.viewWeekLink, pressed && { opacity: 0.6 }]}
+              >
+                <AppIcon name="calendar" size={16} color={colors.primary} />
+                <Text style={[styles.viewWeekLabel, { color: colors.primary }]}>Ver semana</Text>
+              </Pressable>
             </View>
           </View>
 
@@ -358,7 +372,10 @@ export default function RecipeDetailScreen() {
             </View>
 
             <View style={styles.stepsList}>
-              {recipe.steps.map((step) => {
+              {recipe.steps.map((step, index) => {
+                if (isRecipeGroup(step)) return (
+                  <Text key={`step-group-${index}`} accessibilityRole="header" style={[styles.groupHeading, { color: colors.muted }]}>{step.title}</Text>
+                );
                 const done = completedSteps.includes(step.stepNumber);
                 return (
                   <Pressable
@@ -404,13 +421,24 @@ export default function RecipeDetailScreen() {
             </View>
           </View>
 
-          {recipe.tips ? (
+          {recipe.tips?.trim() ? (
             <View style={[styles.tipCard, { backgroundColor: colors.surfaceAlt }]}>
               <AppIcon name="bulb" size={20} color={colors.accent} />
-              <Text style={[styles.tipText, { color: colors.foreground }]}>{recipe.tips}</Text>
+              <View style={styles.tipContent}>
+                <Text accessibilityRole="header" style={[styles.tipTitle, { color: colors.foreground }]}>Consejos</Text>
+                <Text style={[styles.tipText, { color: colors.foreground }]}>{recipe.tips}</Text>
+              </View>
             </View>
           ) : null}
-
+          {recipe.extraTips?.trim() ? (
+            <View style={[styles.tipCard, { backgroundColor: colors.surfaceAlt }]}>
+              <AppIcon name="bulb" size={20} color={colors.accent} />
+              <View style={styles.tipContent}>
+                <Text accessibilityRole="header" style={[styles.tipTitle, { color: colors.foreground }]}>Tips</Text>
+                <Text style={[styles.tipText, { color: colors.foreground }]}>{recipe.extraTips}</Text>
+              </View>
+            </View>
+          ) : null}
           {recipe.nutrition ? (
             <View style={styles.section}>
               <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
@@ -612,17 +640,41 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     borderBottomWidth: 1,
   },
-  ingredientText: {
+  ingredientContent: {
     flex: 1,
-    fontSize: 15,
-    lineHeight: 22,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 6,
   },
+  amountBadge: {
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    maxWidth: "100%",
+    flexShrink: 1,
+  },
+  amountText: { fontSize: 14, lineHeight: 21, fontWeight: "600" },
+  ingredientName: { fontSize: 15, lineHeight: 22, flexShrink: 1 },
+  groupHeading: { fontSize: 15, lineHeight: 22, fontWeight: "600", marginTop: 14, marginBottom: 4 },
   ingredientChecked: {
     textDecorationLine: "line-through",
   },
   actionsColumn: {
     gap: 10,
     marginTop: 6,
+  },
+  viewWeekLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 4,
+  },
+  viewWeekLabel: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "600",
   },
   stepsList: {
     gap: 10,
@@ -670,8 +722,9 @@ const styles = StyleSheet.create({
     marginTop: 14,
     alignItems: "flex-start",
   },
+  tipContent: { flex: 1, gap: 4 },
+  tipTitle: { fontSize: 15, lineHeight: 22, fontWeight: "600" },
   tipText: {
-    flex: 1,
     fontSize: 14,
     lineHeight: 21,
   },

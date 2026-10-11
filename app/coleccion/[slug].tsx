@@ -3,17 +3,21 @@
  */
 
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect } from "react";
-import { FlatList, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useMemo, useState } from "react";
+import { FlatList, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { CachedImage } from "@/components/cached-image";
 import { RecipeCard } from "@/components/recipe-card";
 import { ScreenContainer } from "@/components/screen-container";
 import { ScreenHeader } from "@/components/screen-header";
+import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty-state";
+import { MEAL_TYPE_ORDER } from "@/data/taxonomy";
+import type { MealType } from "@/data/types";
 import { useColors } from "@/hooks/use-colors";
 import { useCatalog } from "@/lib/catalog-context";
 import { trackEvent } from "@/lib/analytics";
+import { mealTypeLabel } from "@/lib/recipe-utils";
 import { display } from "@/lib/typography";
 import { useUserData } from "@/lib/user-data-context";
 
@@ -23,9 +27,31 @@ export default function ColeccionScreen() {
   const { slug } = useLocalSearchParams<{ slug: string }>();
   const { getCollection, getRecipesForCollection } = useCatalog();
   const { isFavorite, toggleFavorite } = useUserData();
+  const [filter, setFilter] = useState<{ slug: string; category: MealType | null }>({
+    slug: slug ?? "", category: null,
+  });
 
   const collection = getCollection(slug ?? "");
   const recipes = getRecipesForCollection(slug ?? "");
+  // Derivar del conjunto completo, no del resultado filtrado: los otros chips no desaparecen al elegir uno.
+  const availableCategories = useMemo(
+    () => [...new Set(recipes.map((recipe) => recipe.category))]
+      .sort((a, b) => MEAL_TYPE_ORDER.indexOf(a) - MEAL_TYPE_ORDER.indexOf(b)),
+    [recipes],
+  );
+  const activeCategory = filter.slug === slug && availableCategories.length > 1 &&
+    filter.category !== null && availableCategories.includes(filter.category) ? filter.category : null;
+  const visibleRecipes = useMemo(
+    () => activeCategory === null ? recipes : recipes.filter((recipe) => recipe.category === activeCategory),
+    [recipes, activeCategory],
+  );
+
+  // Al cambiar colección o desaparecer una categoría, volver a Todas sin conservar un filtro obsoleto.
+  useEffect(() => {
+    if (filter.slug !== (slug ?? "") || (filter.category !== null && activeCategory === null)) {
+      setFilter({ slug: slug ?? "", category: null });
+    }
+  }, [slug, filter, activeCategory]);
 
   useEffect(() => {
     if (collection) {
@@ -51,7 +77,7 @@ export default function ColeccionScreen() {
       <ScreenHeader title={collection.name} onBack={() => router.back()} />
 
       <FlatList
-        data={recipes}
+        data={visibleRecipes}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         showsVerticalScrollIndicator={false}
@@ -64,8 +90,19 @@ export default function ColeccionScreen() {
               </Text>
             ) : null}
             <Text style={[styles.count, { color: colors.foreground }]}>
-              {recipes.length} {recipes.length === 1 ? "receta" : "recetas"}
+              {visibleRecipes.length} {visibleRecipes.length === 1 ? "receta" : "recetas"}
             </Text>
+            {availableCategories.length > 1 ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
+                <Chip label="Todas" compact selected={activeCategory === null}
+                  onPress={() => setFilter({ slug: slug ?? "", category: null })} />
+                {availableCategories.map((category) => (
+                  <Chip key={category} label={mealTypeLabel(category)} compact
+                    selected={activeCategory === category}
+                    onPress={() => setFilter({ slug: slug ?? "", category })} />
+                ))}
+              </ScrollView>
+            ) : null}
           </View>
         }
         ListEmptyComponent={
@@ -111,5 +148,10 @@ const styles = StyleSheet.create({
   },
   count: {
     ...display(16, "700"),
+  },
+  filters: {
+    gap: 8,
+    paddingVertical: 4,
+    alignItems: "center",
   },
 });

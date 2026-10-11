@@ -12,7 +12,7 @@ import "dotenv/config";
 import { afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 
-import { accessCodes, licenses, sessions, users } from "../drizzle/schema";
+import { accessCodes, licenseDevices, licenseEvents, licenses, sessions, users } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import {
   checkAccessStatus,
@@ -45,7 +45,7 @@ async function iniciarSesion(email: string, code: string): Promise<string> {
   await grantLicense({ email, source: "manual", notes: "prueba de cierre de sesión" });
   await sembrarCodigo(email, code);
 
-  const outcome = await verifyAccessCode(email, code, { label: "Prueba", platform: "test" });
+  const outcome = await verifyAccessCode(email, code, { deviceId: "fixture-main-device-0123456789", label: "Prueba", platform: "test" });
   expect(outcome.result.authorized).toBe(true);
 
   const token = outcome.result.token ?? "";
@@ -64,6 +64,8 @@ afterAll(async () => {
       await db.delete(sessions).where(eq(sessions.userId, fila.id));
     }
     await db.delete(accessCodes).where(eq(accessCodes.email, normalizado));
+    await db.delete(licenseDevices).where(eq(licenseDevices.email, normalizado));
+    await db.delete(licenseEvents).where(eq(licenseEvents.email, normalizado));
     await db.delete(licenses).where(eq(licenses.email, normalizado));
     await db.delete(users).where(eq(users.email, normalizado));
   }
@@ -97,7 +99,7 @@ describe("cierre de sesión en el servidor", () => {
     // debería echar a la persona de la tablet, porque nadie espera eso.
     const tokenTelefono = await iniciarSesion(PRIMERO, "590184");
     await sembrarCodigo(PRIMERO, "601295");
-    const otro = await verifyAccessCode(PRIMERO, "601295", { label: "Tablet", platform: "test" });
+    const otro = await verifyAccessCode(PRIMERO, "601295", { deviceId: "fixture-tablet-device-0123456789", label: "Tablet", platform: "test" });
     const tokenTablet = otro.result.token ?? "";
 
     await revokeSession(tokenTelefono);

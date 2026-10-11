@@ -26,7 +26,7 @@ import {
 /** Dominio verificado en Resend desde el que se envían los códigos. */
 const DOMINIO_VERIFICADO = "acceso.conocimientoshop.com";
 /** Casilla real del titular, única a la que conviene enviar en pruebas. */
-const CORREO_AUTORIZADO = "jesushernan3@gmail.com";
+const CORREO_AUTORIZADO = process.env.TEST_AUTHORIZED_EMAIL ?? "";
 
 const SIN_LICENCIA = `prueba.sin.licencia.${Date.now()}@ejemplo.test`;
 
@@ -45,7 +45,7 @@ async function limpiar(email: string) {
 
 describe("configuración del proveedor de correo", () => {
   it("no incluye el código en el asunto", () => {
-    const code = "482731";
+    const code = "654321";
     const { subject } = buildEmailBody(code);
 
     // El asunto se lee en la notificación de la pantalla bloqueada: con el código
@@ -113,7 +113,7 @@ describe("configuración del proveedor de correo", () => {
   });
 });
 
-describe("envío a un correo con licencia activa", () => {
+describe.skipIf(!CORREO_AUTORIZADO)("envío a un correo con licencia activa", () => {
   afterAll(async () => {
     const db = await getDb();
     if (!db) return;
@@ -141,8 +141,8 @@ describe("envío a un correo con licencia activa", () => {
       return;
     }
 
-    // `manualDelivery` en false significa que salió por correo y no quedó
-    // esperando que el administrador lo pase a mano.
+    // manualDelivery es público y siempre false; el estado real sólo se
+    // comprueba con auditoría interna, nunca se infiere de esta bandera.
     expect(resultado.manualDelivery).toBe(false);
     expect(getLastDeliveryError()).toBeNull();
 
@@ -208,15 +208,8 @@ describe("correo sin licencia activa", () => {
     expect(Object.keys(sinLicencia).sort()).toEqual(Object.keys(conLicencia).sort());
     expect(sinLicencia.sent).toBe(conLicencia.sent);
 
-    /*
-     * `manualDelivery` sólo es comparable cuando el proveedor acepta los envíos.
-     * Con la cuota agotada, el correo con licencia cae en entrega asistida y el que
-     * no tiene licencia nunca intenta enviar, así que la diferencia refleja el
-     * estado del proveedor y no una fuga de información.
-     */
-    if (!hasExceededDailyQuota()) {
-      expect(sinLicencia.manualDelivery).toBe(conLicencia.manualDelivery);
-    }
+    // Ni cuota agotada, timeout ni error de Resend permiten distinguir comprador.
+    expect(sinLicencia.manualDelivery).toBe(conLicencia.manualDelivery);
 
     await limpiar(correoSinLicencia);
   }, 90000);

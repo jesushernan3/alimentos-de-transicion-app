@@ -12,9 +12,11 @@ import superjson from "superjson";
 
 import { getApiBaseUrl } from "@/constants/oauth";
 import type { AppRouter } from "@/server/routers";
+import { accessEnforcementLink } from "./access-enforcement-link";
 
 export const api = createTRPCClient<AppRouter>({
   links: [
+    accessEnforcementLink,
     httpBatchLink({
       url: `${getApiBaseUrl()}/api/trpc`,
       transformer: superjson,

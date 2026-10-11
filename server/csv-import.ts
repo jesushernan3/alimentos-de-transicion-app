@@ -11,7 +11,13 @@
  * en la base. Así nadie rompe el catálogo por un archivo mal armado.
  */
 
-import { createRecipe, slugify, updateRecipe, type AdminRecipeInput } from "./catalog-admin";
+import {
+  createRecipe,
+  slugify,
+  updateRecipe,
+  validateAdminRecipeInput,
+  type AdminRecipeInput,
+} from "./catalog-admin";
 import { getDb } from "./db";
 import { categories, collections, dietTags, recipes } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
@@ -35,12 +41,16 @@ export const CSV_COLUMNS = [
   "ingredientes",
   "pasos",
   "consejos",
+  "tips",
   "imagen_url",
   "destacada",
   "estado",
 ] as const;
 
 export type CsvColumn = (typeof CSV_COLUMNS)[number];
+
+/** Columnas históricas: `tips` se acepta si está, pero nunca se exige. */
+const CSV_REQUIRED_COLUMNS = CSV_COLUMNS.filter((column) => column !== "tips");
 
 /** Plantilla de ejemplo que se ofrece para descargar desde el panel. */
 export const CSV_TEMPLATE = [
@@ -63,6 +73,7 @@ export const CSV_TEMPLATE = [
     "Banana madura|3|unidad;Avena|200|g;Huevo|2|unidad",
     "Pisar las bananas hasta formar un puré.|Mezclar con el resto de los ingredientes.|Hornear 40 minutos a 180 grados.",
     "Se conserva tres días en un recipiente cerrado.",
+    "",
     "",
     "no",
     "publicada",
@@ -183,6 +194,164 @@ function parseNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+type JsonRecord = Record<string, unknown>;
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOwn(value: JsonRecord, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function parseJsonQuantity(value: unknown): number | null | "invalid" {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : "invalid";
+  if (typeof value === "string") return parseNumber(value) ?? "invalid";
+  return "invalid";
+}
+
+/** Lee ingredientes enriquecidos JSON o la sintaxis histórica separada por `;`. */
+export function parseIngredientsCell(raw: string): {
+  items: AdminRecipeInput["ingredients"];
+  error?: string;
+} {
+  const value = raw.trim();
+  if (value.startsWith("[")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return { items: [], error: "La celda de ingredientes contiene JSON inválido." };
+    }
+    if (!Array.isArray(parsed)) {
+      return { items: [], error: "La celda de ingredientes debe ser un array JSON." };
+    }
+
+    const items: AdminRecipeInput["ingredients"] = [];
+    for (const [index, rawItem] of parsed.entries()) {
+      if (!isJsonRecord(rawItem)) return { items: [], error: `El ingrediente JSON ${index + 1} no es un objeto.` };
+      if (rawItem.type === "group") {
+        if (Object.keys(rawItem).some((key) => key !== "type" && key !== "title")) {
+          return { items: [], error: `El grupo de ingredientes ${index + 1} sólo puede tener título y tipo.` };
+        }
+        if (typeof rawItem.title !== "string" || !rawItem.title.trim() || rawItem.title.trim().length > 240) {
+          return { items: [], error: `El grupo de ingredientes ${index + 1} necesita título.` };
+        }
+        items.push({ type: "group", title: rawItem.title.trim() });
+        continue;
+      }
+      if (rawItem.type !== undefined && rawItem.type !== "ingredient") {
+        return { items: [], error: `El tipo del ingrediente JSON ${index + 1} no es válido.` };
+      }
+      if (Object.keys(rawItem).some((key) => !["type", "name", "quantity", "unit", "note", "pantryCategory"].includes(key))) {
+        return { items: [], error: `El ingrediente JSON ${index + 1} contiene campos no permitidos.` };
+      }
+      if (typeof rawItem.name !== "string" || !rawItem.name.trim()) {
+        return { items: [], error: `El ingrediente JSON ${index + 1} necesita nombre.` };
+      }
+      const quantity = parseJsonQuantity(rawItem.quantity);
+      if (quantity === "invalid") {
+        return { items: [], error: `La cantidad del ingrediente JSON ${index + 1} no es válida.` };
+      }
+      if (typeof rawItem.unit !== "string" || !rawItem.unit.trim() || rawItem.unit.length > 24) {
+        return { items: [], error: `La unidad del ingrediente JSON ${index + 1} debe tener entre 1 y 24 caracteres.` };
+      }
+      if (rawItem.note !== undefined && rawItem.note !== null && typeof rawItem.note !== "string") {
+        return { items: [], error: `La nota del ingrediente JSON ${index + 1} no es válida.` };
+      }
+      items.push({
+        type: "ingredient",
+        name: rawItem.name.trim(),
+        quantity,
+        unit: rawItem.unit.trim(),
+        note: rawItem.note === undefined ? null : rawItem.note as string | null,
+        pantryCategory: typeof rawItem.pantryCategory === "string" ? rawItem.pantryCategory : undefined,
+      });
+    }
+    return { items };
+  }
+
+  const items: AdminRecipeInput["ingredients"] = [];
+  for (const [index, entry] of value
+    .split(";")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .entries()) {
+    const parts = entry.split("|").map((part) => part.trim());
+    const name = parts[0] ?? "";
+    const rawQuantity = parts[1] ?? "";
+    const quantity = parseNumber(rawQuantity);
+    if (!name) return { items: [], error: `El ingrediente ${index + 1} no tiene nombre.` };
+    if (quantity === null && rawQuantity.length > 0) {
+      return { items: [], error: `La cantidad "${rawQuantity}" del ingrediente "${name}" no es un número.` };
+    }
+    const unit = parts[2] ?? "unidad";
+    if (!unit || unit.length > 24) {
+      return { items: [], error: `La unidad del ingrediente ${index + 1} debe tener entre 1 y 24 caracteres.` };
+    }
+    items.push({ name, quantity, unit, note: parts[3] || null });
+  }
+  return { items };
+}
+
+/** Lee pasos enriquecidos JSON o la sintaxis histórica separada por `|`. */
+export function parseStepsCell(raw: string): {
+  items: AdminRecipeInput["steps"];
+  error?: string;
+} {
+  const value = raw.trim();
+  if (value.startsWith("[")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return { items: [], error: "La celda de pasos contiene JSON inválido." };
+    }
+    if (!Array.isArray(parsed)) return { items: [], error: "La celda de pasos debe ser un array JSON." };
+
+    const items: AdminRecipeInput["steps"] = [];
+    for (const [index, rawItem] of parsed.entries()) {
+      if (!isJsonRecord(rawItem)) return { items: [], error: `El paso JSON ${index + 1} no es un objeto.` };
+      if (rawItem.type === "group") {
+        if (Object.keys(rawItem).some((key) => key !== "type" && key !== "title")) {
+          return { items: [], error: `El grupo de pasos ${index + 1} sólo puede tener título y tipo.` };
+        }
+        if (typeof rawItem.title !== "string" || !rawItem.title.trim() || rawItem.title.trim().length > 240) {
+          return { items: [], error: `El grupo de pasos ${index + 1} necesita título.` };
+        }
+        items.push({ type: "group", title: rawItem.title.trim() });
+        continue;
+      }
+      if (rawItem.type !== undefined && rawItem.type !== "step") {
+        return { items: [], error: `El tipo del paso JSON ${index + 1} no es válido.` };
+      }
+      if (Object.keys(rawItem).some((key) => !["type", "description", "durationMinutes"].includes(key))) {
+        return { items: [], error: `El paso JSON ${index + 1} contiene campos no permitidos.` };
+      }
+      if (typeof rawItem.description !== "string" || !rawItem.description.trim()) {
+        return { items: [], error: `El paso JSON ${index + 1} necesita descripción.` };
+      }
+      const duration = rawItem.durationMinutes === undefined || rawItem.durationMinutes === null
+        ? null
+        : typeof rawItem.durationMinutes === "number" && Number.isInteger(rawItem.durationMinutes) && rawItem.durationMinutes >= 0
+          ? rawItem.durationMinutes
+          : "invalid";
+      if (duration === "invalid") return { items: [], error: `La duración del paso JSON ${index + 1} no es válida.` };
+      items.push({ type: "step", description: rawItem.description.trim(), durationMinutes: duration });
+    }
+    return { items };
+  }
+
+  return {
+    items: value
+      .split("|")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+      .map((description) => ({ description })),
+  };
+}
+
 /**
  * Valida el contenido completo de un CSV sin escribir nada en la base.
  *
@@ -201,7 +370,7 @@ export async function validateCsv(content: string): Promise<ValidationReport> {
   }
 
   const header = rows[0].map((value) => value.trim().toLowerCase());
-  const missingColumns = CSV_COLUMNS.filter((column) => !header.includes(column));
+  const missingColumns = CSV_REQUIRED_COLUMNS.filter((column) => !header.includes(column));
 
   if (missingColumns.length > 0) {
     return {
@@ -316,57 +485,23 @@ export async function validateCsv(content: string): Promise<ValidationReport> {
       });
     }
 
-    // Ingredientes: "Nombre|cantidad|unidad;Nombre|cantidad|unidad"
+    // Ingredientes: JSON enriquecido cuando hay grupos; sintaxis histórica en los demás casos.
     const rawIngredients = cell(row, "ingredientes");
-    const ingredients: AdminRecipeInput["ingredients"] = [];
-
-    if (rawIngredients.length === 0) {
+    const parsedIngredients = parseIngredientsCell(rawIngredients);
+    const ingredients = parsedIngredients.items;
+    if (parsedIngredients.error) {
+      rowErrors.push({ row: rowNumber, field: "ingredientes", message: parsedIngredients.error });
+    } else if (rawIngredients.length === 0 || ingredients.length === 0) {
       rowErrors.push({ row: rowNumber, field: "ingredientes", message: "Hay que cargar al menos un ingrediente." });
-    } else {
-      rawIngredients
-        .split(";")
-        .map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0)
-        .forEach((entry, index) => {
-          const parts = entry.split("|").map((part) => part.trim());
-          const name = parts[0] ?? "";
-          const rawQuantity = parts[1] ?? "";
-          const quantity = parseNumber(rawQuantity);
-          const unit = parts[2] ?? "unidad";
-
-          if (name.length === 0) {
-            rowErrors.push({
-              row: rowNumber,
-              field: "ingredientes",
-              message: `El ingrediente ${index + 1} no tiene nombre.`,
-            });
-            return;
-          }
-
-          // Una cantidad vacía es legítima: sal, pimienta o especias suelen ir
-          // «a gusto». Sólo se rechaza cuando hay texto que no es un número.
-          if (quantity === null && rawQuantity.length > 0) {
-            rowErrors.push({
-              row: rowNumber,
-              field: "ingredientes",
-              message: `La cantidad "${rawQuantity}" del ingrediente "${name}" no es un número. Dejala vacía si va a gusto.`,
-            });
-            return;
-          }
-
-          ingredients.push({ name, quantity, unit });
-        });
     }
 
-    // Pasos: separados por barra vertical.
+    // Pasos: JSON enriquecido cuando hay grupos; barra vertical en archivos legacy.
     const rawSteps = cell(row, "pasos");
-    const steps: AdminRecipeInput["steps"] = rawSteps
-      .split("|")
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0)
-      .map((description) => ({ description }));
-
-    if (steps.length === 0) {
+    const parsedSteps = parseStepsCell(rawSteps);
+    const steps = parsedSteps.items;
+    if (parsedSteps.error) {
+      rowErrors.push({ row: rowNumber, field: "pasos", message: parsedSteps.error });
+    } else if (rawSteps.length === 0 || steps.length === 0) {
       rowErrors.push({ row: rowNumber, field: "pasos", message: "Hay que cargar al menos un paso." });
     }
 
@@ -379,6 +514,37 @@ export async function validateCsv(content: string): Promise<ValidationReport> {
       .split("|")
       .map((entry) => slugify(entry))
       .filter((entry) => entry.length > 0);
+
+    const parsedInput: AdminRecipeInput = {
+      slug,
+      title,
+      shortDescription: cell(row, "descripcion") || null,
+      description: cell(row, "descripcion") || null,
+      categorySlug: slugify(category),
+      dietTagSlugs: dietTags,
+      collectionSlugs,
+      portions: servings,
+      prepTime,
+      cookingTime: cookTime,
+      difficulty: difficulty as AdminRecipeInput["difficulty"],
+      nutrition: buildNutrition(row, cell),
+      ingredients,
+      steps,
+      tips: cell(row, "consejos") || null,
+      ...(columnIndex.has("tips") ? { extraTips: cell(row, "tips") || null } : {}),
+      imageKey: cell(row, "imagen_url") || null,
+      featured: ["si", "sí", "true", "1"].includes(cell(row, "destacada").toLowerCase()),
+      status: STATUS_TO_DB[status],
+    };
+    try {
+      validateAdminRecipeInput(parsedInput);
+    } catch (error) {
+      rowErrors.push({
+        row: rowNumber,
+        field: "receta",
+        message: error instanceof Error ? error.message : "La receta no es válida.",
+      });
+    }
 
     if (collectionSlugs.length === 0) {
       warnings.push({
@@ -428,26 +594,7 @@ export async function validateCsv(content: string): Promise<ValidationReport> {
       slug,
       title,
       action: existingBySlug.has(slug) ? "actualizar" : "crear",
-      input: {
-        slug,
-        title,
-        shortDescription: cell(row, "descripcion") || null,
-        description: cell(row, "descripcion") || null,
-        categorySlug: slugify(category),
-        dietTagSlugs: dietTags,
-        collectionSlugs,
-        portions: servings,
-        prepTime,
-        cookingTime: cookTime,
-        difficulty: difficulty as AdminRecipeInput["difficulty"],
-        nutrition: buildNutrition(row, cell),
-        ingredients,
-        steps,
-        tips: cell(row, "consejos") || null,
-        imageKey: cell(row, "imagen_url") || null,
-        featured: ["si", "sí", "true", "1"].includes(cell(row, "destacada").toLowerCase()),
-        status: STATUS_TO_DB[status],
-      },
+      input: parsedInput,
     });
   }
 
@@ -539,7 +686,13 @@ export async function applyImport(rows: ValidatedRow[]): Promise<ImportResult> {
 /** Exporta el catálogo completo al mismo formato que acepta la importación. */
 export async function exportCsv(): Promise<string> {
   const { listRecipesForAdmin, getRecipeForEdit } = await import("./catalog-admin");
-  const { rows: list } = await listRecipesForAdmin();
+  const firstPage = await listRecipesForAdmin({ limit: 200, offset: 0 });
+  const list = [...firstPage.rows];
+  for (let offset = list.length; offset < firstPage.total; offset += 200) {
+    const page = await listRecipesForAdmin({ limit: 200, offset });
+    list.push(...page.rows);
+    if (page.rows.length === 0) break;
+  }
 
   const lines: string[] = [CSV_COLUMNS.join(",")];
 
@@ -563,11 +716,10 @@ export async function exportCsv(): Promise<string> {
         recipe.nutrition ? String(recipe.nutrition.protein) : "",
         recipe.nutrition ? String(recipe.nutrition.carbs) : "",
         recipe.nutrition ? String(recipe.nutrition.fat) : "",
-        recipe.ingredients
-          .map((ingredient) => `${ingredient.name}|${ingredient.quantity ?? ""}|${ingredient.unit}`)
-          .join(";"),
-        recipe.steps.map((step) => step.description).join("|"),
+        exportIngredientsCell(recipe.ingredients),
+        exportStepsCell(recipe.steps),
         recipe.tips ?? "",
+        recipe.extraTips ?? "",
         recipe.imageKey ?? "",
         recipe.featured ? "si" : "no",
         STATUS_TO_CSV[recipe.status ?? "draft"] ?? "borrador",
@@ -576,4 +728,50 @@ export async function exportCsv(): Promise<string> {
   }
 
   return lines.join("\n");
+}
+
+export function exportIngredientsCell(ingredients: AdminRecipeInput["ingredients"]): string {
+  const hasGroup = ingredients.some((item) => item.type === "group");
+  const needsJson = ingredients.some((item) => item.type === "group" ||
+    [item.name, item.unit, item.note ?? ""].some((value) => /[;|]/.test(value)));
+  if (hasGroup || needsJson) {
+    return JSON.stringify(ingredients.map((item) => item.type === "group"
+      ? { type: "group", title: item.title }
+      : {
+          type: "ingredient",
+          name: item.name,
+          quantity: item.quantity,
+          unit: item.unit,
+          ...(item.note ? { note: item.note } : {}),
+          ...(item.pantryCategory ? { pantryCategory: item.pantryCategory } : {}),
+        }));
+  }
+  return ingredients
+    .filter((item): item is Extract<AdminRecipeInput["ingredients"][number], { name: string }> => item.type !== "group")
+    .map((ingredient) => [
+      ingredient.name,
+      ingredient.quantity ?? "",
+      ingredient.unit,
+      ingredient.note ?? "",
+    ].join("|"))
+    .join(";");
+}
+
+export function exportStepsCell(steps: AdminRecipeInput["steps"]): string {
+  const hasGroup = steps.some((item) => item.type === "group");
+  const hasDuration = steps.some((item) => item.type !== "group" && item.durationMinutes != null);
+  const needsJson = steps.some((item) => item.type !== "group" && /[|]/.test(item.description));
+  if (hasGroup || hasDuration || needsJson) {
+    return JSON.stringify(steps.map((item) => item.type === "group"
+      ? { type: "group", title: item.title }
+      : {
+          type: "step",
+          description: item.description,
+          durationMinutes: item.durationMinutes ?? null,
+        }));
+  }
+  return steps
+    .filter((item): item is Extract<AdminRecipeInput["steps"][number], { description: string }> => item.type !== "group")
+    .map((step) => step.description)
+    .join("|");
 }

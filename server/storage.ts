@@ -33,8 +33,27 @@ export async function storagePut(
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream",
 ): Promise<{ key: string; url: string }> {
+  return putAtKey(appendHashSuffix(normalizeKey(relKey)), data, contentType);
+}
+
+/** Sólo portadas nuevas: la clave se registra en BD antes del PUT y se reutiliza al reintentar. */
+export async function storagePutCollectionCover(
+  key: string,
+  data: Buffer,
+): Promise<{ key: string; url: string }> {
+  if (!/^catalog\/collections\/[a-f0-9-]{36}\.webp$/.test(key)) {
+    throw new Error("Clave de portada no válida.");
+  }
+  return putAtKey(key, data, "image/webp", 30000);
+}
+
+async function putAtKey(
+  key: string,
+  data: Buffer | Uint8Array | string,
+  contentType: string,
+  timeoutMs?: number,
+): Promise<{ key: string; url: string }> {
   const { forgeUrl, forgeKey } = getForgeConfig();
-  const key = appendHashSuffix(normalizeKey(relKey));
 
   // 1. Get presigned PUT URL from Forge
   const presignUrl = new URL("v1/storage/presign/put", forgeUrl + "/");
@@ -42,6 +61,7 @@ export async function storagePut(
 
   const presignResp = await fetch(presignUrl, {
     headers: { Authorization: `Bearer ${forgeKey}` },
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
 
   if (!presignResp.ok) {
@@ -62,6 +82,7 @@ export async function storagePut(
     method: "PUT",
     headers: { "Content-Type": contentType },
     body: blob,
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
 
   if (!uploadResp.ok) {

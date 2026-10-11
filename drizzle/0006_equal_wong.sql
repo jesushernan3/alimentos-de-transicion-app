@@ -1,0 +1,1 @@
+ALTER TABLE `shopifyWebhookEvents` MODIFY COLUMN `result` enum('processing','license_created','license_reactivated','license_existing','ignored_product','ignored_status','invalid_email','internal_error') NOT NULL;

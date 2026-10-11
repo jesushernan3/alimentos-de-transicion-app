@@ -1,9 +1,9 @@
 import { useRouter } from "expo-router";
+import Constants from "expo-constants";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +19,7 @@ import { Chip } from "@/components/ui/chip";
 import { useColors } from "@/hooks/use-colors";
 import { useAccess } from "@/lib/access-context";
 import { useCatalog } from "@/lib/catalog-context";
+import { openAppRating } from "@/lib/rate-app";
 import {
   clearImageCache,
   countMissingImages,
@@ -31,7 +32,6 @@ import {
   type UnitSystem,
   useUserData,
 } from "@/lib/user-data-context";
-import Constants from "expo-constants";
 
 const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: "claro", label: "Claro" },
@@ -169,7 +169,7 @@ export default function AjustesScreen() {
   function confirmSignOut() {
     Alert.alert(
       "¿Querés cerrar sesión?",
-      "Si cerrás sesión, vas a seguir conservando en este dispositivo tus recetas descargadas, favoritos, planificador y lista de compras. Mientras no vuelvas a iniciar sesión, no vas a recibir recetas nuevas ni actualizaciones de contenido.",
+      "Si cerrás sesión, vas a seguir conservando en este dispositivo tus recetas descargadas, favoritos, planificador y lista de compras. Mientras no vuelvas a iniciar sesión, no vas a recibir recetas nuevas ni actualizaciones de contenido. También se libera este dispositivo del límite de 3 cuando el servidor confirma la baja; sin conexión, se reintenta al recuperar internet.",
       [
         { text: "Cancelar", style: "cancel" },
         {
@@ -178,15 +178,11 @@ export default function AjustesScreen() {
           onPress: async () => {
             const { serverSessionRevoked } = await signOutAccess();
 
-            // Sin red la sesión se cierra igual en el teléfono, pero sigue
-            // activa en el servidor hasta que se la revoque o venza por
-            // inactividad, a los 180 días. Ese plazo es demasiado largo para
-            // quedarse tranquilo si el teléfono se perdió, así que el aviso lo
-            // dice con el número concreto y sugiere reintentar con conexión.
+            // Nunca afirmar que el cupo remoto se liberó sin un ACK del servidor.
             if (!serverSessionRevoked) {
               Alert.alert(
                 "Sesión cerrada en este teléfono",
-                "No pudimos avisarle al servidor porque no hay conexión, así que la sesión anterior sigue activa allí y sólo vence tras 180 días sin uso. Si necesitás darla de baja ahora, volvé a iniciar sesión con conexión y cerrá sesión de nuevo, o escribinos desde Ayuda.",
+                "La baja del servidor todavía no se confirmó. La app la reintentará al recuperar conexión, sin que tengas que volver a ingresar. Hasta entonces, el dispositivo puede seguir ocupando un lugar. Si necesitás ayuda, escribinos desde Ayuda.",
               );
             }
           },
@@ -286,8 +282,8 @@ export default function AjustesScreen() {
           </View>
           {preferences.units === "imperial" ? (
             <Text style={[styles.hint, { color: colors.muted }]}>
-              Las recetas están preparadas originalmente en sistema métrico. La conversión a unidades
-              imperiales estará disponible en una próxima actualización.</Text>
+              Las recetas están preparadas originalmente en sistema métrico. La conversión a unidades imperiales estará disponible en una próxima actualización.
+            </Text>
           ) : null}
         </SettingsBlock>
 
@@ -295,10 +291,10 @@ export default function AjustesScreen() {
           <View style={styles.switchRow}>
             <View style={styles.switchTexts}>
               <Text style={[styles.switchTitle, { color: colors.foreground }]}>
-                Avisos sobre tu plan semanal y nuevas recetas.
+                Recordatorios y novedades
               </Text>
               <Text style={[styles.switchSubtitle, { color: colors.muted }]}>
-                Avisos sobre tu plan semanal y nuevas recetas.
+                Recibí avisos sobre tu planificación y contenido nuevo.
               </Text>
             </View>
             <Switch
@@ -318,9 +314,9 @@ export default function AjustesScreen() {
               color={workingOffline ? colors.warning : colors.success}
             />
             <Text style={[styles.infoText, { color: colors.foreground }]}>
-              {recipes.length} recetas y {collections.length} colecciones están guardadas en este teléfono
-              {cacheSize > 0 ? `, junto con ${formatBytes(cacheSize)} de imágenes` : ""}. Podés consultar
-              este contenido sin conexión.
+              {recipes.length} recetas y {collections.length} colecciones están guardadas en este
+              teléfono{cacheSize > 0 ? `, ocupando ${formatBytes(cacheSize)} de fotos` : ""}. Podés
+              consultar este contenido sin conexión.
             </Text>
           </View>
 
@@ -329,8 +325,7 @@ export default function AjustesScreen() {
               <AppIcon name="warning" size={18} color={colors.warning} />
               <View style={styles.missingTexts}>
                 <Text style={[styles.infoText, { color: colors.foreground }]}>
-                  Faltan {missingPhotos} {missingPhotos === 1 ? "imagen" : "imágenes"} por descargar.
-                  Si no tenés conexión, algunas recetas pueden verse sin foto.
+                  Faltan {missingPhotos} {missingPhotos === 1 ? "imagen" : "imágenes"} por descargar. Si no tenés conexión, algunas recetas pueden verse sin foto.
                 </Text>
                 {repairingPhotos ? (
                   <View style={styles.missingProgress}>
@@ -403,40 +398,17 @@ export default function AjustesScreen() {
           <View style={[styles.infoCard, { backgroundColor: colors.surfaceAlt }]}>
             <AppIcon name="lock" size={18} color={colors.primary} />
             <Text style={[styles.infoText, { color: colors.foreground }]}>
-              Ingresaste con {email ?? "tu correo"}. Este correo está asociado a tu acceso a la app.
-              Si pasás 180 días sin usar Alimentos de Transición con conexión, vas a tener que
-              iniciar sesión nuevamente con un código.
+              Ingresaste con {email ?? "tu correo"}. Este correo está asociado a tu acceso a la app. Si pasás 180 días sin usar Alimentos de Transición con conexión, vas a tener que iniciar sesión nuevamente con un código.
             </Text>
           </View>
-          <SettingsRow
-            icon="support"
-            label="Ayuda"
-            onPress={() => router.push("/soporte")}
-          />
-
-          <SettingsRow
-            icon="refresh"
-            label="Ver introducción de nuevo"
-            onPress={() => router.push("/onboarding")}
-          />
-
-          <SettingsRow
-            icon="star"
-            label="Calificar la app"
-            onPress={() =>
-              Linking.openURL(
-                "https://play.google.com/store/apps/details?id=com.alimentosdetransicion.app"
-              )
+          <SettingsRow icon="support" label="Ayuda" onPress={() => router.push("/soporte")} />
+          <SettingsRow icon="info" label="Ver introducción de nuevo" onPress={() => router.push("/onboarding")} />
+          <SettingsRow icon="star" label="Calificar la app" onPress={async () => {
+            if (!(await openAppRating())) {
+              Alert.alert("No pudimos abrir Google Play", "Probá de nuevo con conexión a internet.");
             }
-          />
-
-          <SettingsRow
-            icon="logout"
-            label="Cerrar sesión"
-            onPress={confirmSignOut}
-            destructive
-            isLast
-          />
+          }} />
+          <SettingsRow icon="logout" label="Cerrar sesión" onPress={confirmSignOut} destructive isLast />
         </SettingsBlock>
 
         <SettingsBlock title="Datos y privacidad">
@@ -460,7 +432,7 @@ export default function AjustesScreen() {
         </SettingsBlock>
 
         <Text style={[styles.version, { color: colors.muted }]}>
-          Alimentos de Transición · Versión {Constants.expoConfig?.version ?? "1.0.0"}
+          Alimentos de Transición · Versión {Constants.expoConfig?.version ?? "1.0.3"}
         </Text>
       </ScrollView>
     </ScreenContainer>

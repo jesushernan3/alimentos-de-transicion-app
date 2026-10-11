@@ -158,7 +158,7 @@ reclama «no me llega el código» pueda diagnosticarse.
 
 **Fecha**: 19 de agosto de 2026.
 
-El asunto era `Tu código de acceso: 482731`. Ahora es fijo:
+El asunto era `Tu código de acceso: GOOGLE_REVIEW_CODE`. Ahora es fijo:
 `Tu código de acceso — Alimentos de Transición`, y el código aparece únicamente en
 el cuerpo del mensaje.
 
@@ -327,7 +327,7 @@ un correo sin compra.
 
 **Resolución**:
 
-1. Se otorgó una licencia manual activa para `jesushernan3@gmail.com`.
+1. Se otorgó una licencia manual activa para `[correo privado del comprador]`.
 2. Se diferenciaron los mensajes de rechazo: ahora la aplicación distingue
    entre no tener compra, tenerla en proceso y tenerla dada de baja. Antes
    los tres casos mostraban el mismo texto, lo que resultaba confuso cuando la

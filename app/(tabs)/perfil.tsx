@@ -1,4 +1,5 @@
 import { useRouter } from "expo-router";
+import Constants from "expo-constants";
 import { useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
@@ -140,7 +141,7 @@ export default function PerfilScreen() {
           </Text>
         </View>
 
-        <Text style={[styles.version, { color: colors.muted }]}>Versión 1.0.0</Text>
+        <Text style={[styles.version, { color: colors.muted }]}>Versión {Constants.expoConfig?.version ?? "1.0.3"}</Text>
       </ScrollView>
     </ScreenContainer>
   );

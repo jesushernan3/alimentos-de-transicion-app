@@ -121,9 +121,6 @@ export default function OnboardingScreen() {
       </ScrollView>
 
       <View style={styles.footer}>
-        <Text style={[styles.progressText, { color: colors.muted }]}>
-          {index + 1} de {SLIDES.length}
-        </Text>
         <View style={styles.dots}>
           {SLIDES.map((slide, dotIndex) => (
             <View
@@ -138,6 +135,9 @@ export default function OnboardingScreen() {
             />
           ))}
         </View>
+        <Text accessibilityLiveRegion="polite" style={[styles.pageIndicator, { color: colors.muted }]}>
+          {index + 1} de {SLIDES.length}
+        </Text>
         <AppButton
           label={index === SLIDES.length - 1 ? "Empezar" : "Siguiente"}
           onPress={goNext}
@@ -195,14 +195,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 6,
   },
-  dot: {
-    height: 8,
-    borderRadius: 4,
-  },
-  progressText: {
+  pageIndicator: {
     textAlign: "center",
     fontSize: 13,
     lineHeight: 18,
-    fontWeight: "600",
+  },
+  dot: {
+    height: 8,
+    borderRadius: 4,
   },
 });

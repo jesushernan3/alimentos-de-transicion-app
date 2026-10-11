@@ -10,7 +10,7 @@ import "dotenv/config";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 
-import { accessCodes, licenses, sessions, users } from "../drizzle/schema";
+import { accessCodes, licenseDevices, licenseEvents, licenses, sessions, users } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import {
   checkAccessStatus,
@@ -29,8 +29,20 @@ import {
   matchesReviewCode,
 } from "../server/review-access";
 
-const REVIEW_EMAIL = normalizeEmail(process.env.GOOGLE_REVIEW_EMAIL ?? "");
-const REVIEW_CODE = (process.env.GOOGLE_REVIEW_CODE ?? "").trim();
+// Fixture aislado: nunca borrar/revocar la cuenta real de Google Play.
+const ORIGINAL_REVIEW_EMAIL = process.env.GOOGLE_REVIEW_EMAIL;
+const ORIGINAL_REVIEW_CODE = process.env.GOOGLE_REVIEW_CODE;
+const REVIEW_EMAIL = `review.fixture.${Date.now()}@ejemplo.test`;
+const REVIEW_CODE = "952741";
+process.env.GOOGLE_REVIEW_EMAIL = REVIEW_EMAIL;
+process.env.GOOGLE_REVIEW_CODE = REVIEW_CODE;
+afterAll(async () => {
+  await resetReviewAccount();
+  if (ORIGINAL_REVIEW_EMAIL === undefined) delete process.env.GOOGLE_REVIEW_EMAIL;
+  else process.env.GOOGLE_REVIEW_EMAIL = ORIGINAL_REVIEW_EMAIL;
+  if (ORIGINAL_REVIEW_CODE === undefined) delete process.env.GOOGLE_REVIEW_CODE;
+  else process.env.GOOGLE_REVIEW_CODE = ORIGINAL_REVIEW_CODE;
+});
 
 /**
  * Deja la cuenta de revisión sin licencia ni sesiones, para partir de un estado
@@ -45,28 +57,10 @@ async function resetReviewAccount() {
     await db.delete(sessions).where(eq(sessions.userId, user.id));
   }
   await db.delete(accessCodes).where(eq(accessCodes.email, REVIEW_EMAIL));
+  await db.delete(licenseDevices).where(eq(licenseDevices.email, REVIEW_EMAIL));
+  await db.delete(licenseEvents).where(eq(licenseEvents.email, REVIEW_EMAIL));
   await db.delete(licenses).where(eq(licenses.email, REVIEW_EMAIL));
   await db.delete(users).where(eq(users.email, REVIEW_EMAIL));
-}
-
-/**
- * Restituye la licencia activa que la cuenta de revisión necesita en producción.
- *
- * Sin esto, la propia prueba dejaría al revisor de Google sin acceso: las
- * comprobaciones de licencia revocada, reembolsada y vencida modifican el mismo
- * registro real que usará Google, porque el correo no es inventado.
- */
-async function restoreReviewLicense() {
-  if (!REVIEW_EMAIL) return;
-  await grantLicense({
-    email: REVIEW_EMAIL,
-    source: "gift",
-    notes: "Cuenta de revision de Google Play",
-  });
-
-  const db = await getDb();
-  if (!db) return;
-  await db.update(licenses).set({ expiresAt: null }).where(eq(licenses.email, REVIEW_EMAIL));
 }
 
 describe("configuración de la cuenta de revisión", () => {
@@ -109,8 +103,7 @@ describe("ingreso de la cuenta de revisión", () => {
   afterAll(async () => {
     if (token) await revokeSession(token);
     await resetReviewAccount();
-    // La licencia queda como debe estar para la revisión real de Google.
-    await restoreReviewLicense();
+    // El fixture se elimina; la cuenta real queda intacta.
   }, 30000);
 
   it("no intenta enviar un correo y deja seguir a la pantalla del código", async () => {
@@ -176,6 +169,26 @@ describe("ingreso de la cuenta de revisión", () => {
     if (again.result.token) await revokeSession(again.result.token);
   }, 40000);
 
+  it("Review queda exento del límite comercial de tres dispositivos", async () => {
+    const db = await getDb();
+    if (!db) throw new Error("Sin base de datos");
+    const tokens: string[] = [];
+    // This is a generated isolated fixture, never the production review account.
+    for (let i = 1; i <= 4; i++) {
+      const result = await verifyAccessCode(REVIEW_EMAIL, REVIEW_CODE, {
+        deviceId: `isolated-review-device-${i}-0123456789`, platform: "android",
+      });
+      expect(result.result.authorized).toBe(true);
+      expect(result.result.token).toBeTruthy();
+      tokens.push(result.result.token!);
+    }
+    const rows = await db.select().from(licenseDevices)
+      .where(eq(licenseDevices.email, REVIEW_EMAIL));
+    expect(rows).toHaveLength(4);
+    expect(rows.filter((row) => row.revokedAt === null && row.releasedAt === null)).toHaveLength(4);
+    for (const reviewToken of tokens) await revokeSession(reviewToken);
+  }, 60000);
+
   it("cierra el acceso si la licencia se revoca", async () => {
     await setLicenseStatus(REVIEW_EMAIL, "revoked", "prueba", "prueba automatizada");
 
@@ -228,6 +241,8 @@ describe("los usuarios normales no se ven afectados", () => {
       await db.delete(sessions).where(eq(sessions.userId, user.id));
     }
     await db.delete(accessCodes).where(eq(accessCodes.email, normalized));
+    await db.delete(licenseDevices).where(eq(licenseDevices.email, normalized));
+    await db.delete(licenseEvents).where(eq(licenseEvents.email, normalized));
     await db.delete(licenses).where(eq(licenses.email, normalized));
     await db.delete(users).where(eq(users.email, normalized));
   }, 30000);

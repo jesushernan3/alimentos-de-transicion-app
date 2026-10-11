@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -27,6 +28,8 @@ import { AppButton } from "@/components/ui/app-button";
 import { AppIcon } from "@/components/ui/app-icon";
 import { useColors } from "@/hooks/use-colors";
 import { useAccess } from "@/lib/access-context";
+import { DEVICE_LIMIT_FEEDBACK } from "@/lib/device-limit-feedback";
+import { DEVICE_REVOKED_FEEDBACK } from "@/lib/device-revocation";
 import { display } from "@/lib/typography";
 
 type Step = "email" | "code";
@@ -36,7 +39,15 @@ const LOGO = require("@/assets/images/brand/logo-adt.png");
 export default function AccesoScreen() {
   const colors = useColors();
   const router = useRouter();
-  const { state, requestCode, verifyCode } = useAccess();
+  const {
+    state,
+    accessError,
+    deviceReactivated,
+    deviceRecoveryAvailable,
+    revalidate,
+    requestCode,
+    verifyCode,
+  } = useAccess();
 
   const [step, setStep] = useState<Step>("email");
   const [email, setEmail] = useState("");
@@ -45,6 +56,8 @@ export default function AccesoScreen() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0);
+  const [deviceLimitVisible, setDeviceLimitVisible] = useState(false);
+  const [recoverWithCode, setRecoverWithCode] = useState(false);
   /** Se muestra cuando el correo no tiene una compra asociada. */
   const [notFound, setNotFound] = useState(false);
   /**
@@ -66,9 +79,27 @@ export default function AccesoScreen() {
   /** Aviso cuando el acceso fue dado de baja desde el servidor. */
   useEffect(() => {
     if (state === "revoked") {
-      setError("Tu acceso fue desactivado. Escribinos si creés que es un error.");
+      setError(
+        accessError ??
+          "Tu acceso fue desactivado. Escribinos si creés que es un error.",
+      );
     }
-  }, [state]);
+  }, [state, accessError]);
+
+  useEffect(() => {
+    if (
+      state === "device-revoked" &&
+      !deviceReactivated &&
+      !deviceRecoveryAvailable
+    ) {
+      setStep("email");
+      setCode("");
+      setNotFound(false);
+      setDeviceLimitVisible(false);
+      setError(null);
+      setRecoverWithCode(false);
+    }
+  }, [state, deviceReactivated, deviceRecoveryAvailable]);
 
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
 
@@ -120,6 +151,12 @@ export default function AccesoScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
 
+    if (result.deviceLimitReached) {
+      setDeviceLimitVisible(true);
+      setCode("");
+      return;
+    }
+
     if (result.error) {
       setError(result.error);
       setCode("");
@@ -128,6 +165,52 @@ export default function AccesoScreen() {
       setLicenseStatus(result.licenseStatus ?? "none");
       setNotFound(true);
     }
+  }
+
+  if (
+    state === "device-revoked" &&
+    !deviceReactivated &&
+    (!deviceRecoveryAvailable || !recoverWithCode)
+  ) {
+    return (
+      <ScreenContainer edges={["top", "bottom", "left", "right"]}>
+        <View style={styles.centered}>
+          <AppIcon name="info" size={36} color={colors.primary} />
+          <Text
+            accessibilityRole="header"
+            style={[styles.title, { color: colors.foreground }]}
+          >
+            {DEVICE_REVOKED_FEEDBACK.title}
+          </Text>
+          <Text style={[styles.body, { color: colors.muted }]}>
+            {DEVICE_REVOKED_FEEDBACK.message}
+          </Text>
+          <View style={styles.notFoundActions}>
+            <AppButton
+              label="Ir a Ayuda"
+              onPress={() => router.push("/soporte")}
+            />
+            {deviceRecoveryAvailable && (
+              <AppButton label="Verificar acceso con un código nuevo" variant="secondary"
+                onPress={() => { setStep("email"); setCode(""); setRecoverWithCode(true); }} />
+            )}
+            <AppButton
+              label={busy ? "Comprobando…" : "Comprobar reactivación"}
+              variant="secondary"
+              disabled={busy}
+              onPress={async () => {
+                setBusy(true);
+                try {
+                  await revalidate();
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            />
+          </View>
+        </View>
+      </ScreenContainer>
+    );
   }
 
   if (notFound) {
@@ -148,7 +231,9 @@ export default function AccesoScreen() {
     return (
       <ScreenContainer edges={["top", "bottom", "left", "right"]}>
         <View style={styles.centered}>
-          <View style={[styles.iconCircle, { backgroundColor: colors.surfaceAlt }]}>
+          <View
+            style={[styles.iconCircle, { backgroundColor: colors.surfaceAlt }]}
+          >
             <AppIcon name="info" size={30} color={colors.primary} />
           </View>
           <Text style={[styles.title, { color: colors.foreground }]}>
@@ -182,6 +267,41 @@ export default function AccesoScreen() {
 
   return (
     <ScreenContainer edges={["top", "bottom", "left", "right"]}>
+      <Modal
+        visible={deviceLimitVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeviceLimitVisible(false)}
+      >
+        <View style={styles.dialogBackdrop}>
+          <View
+            style={[styles.dialog, { backgroundColor: colors.surface }]}
+            accessibilityViewIsModal
+          >
+            <Text
+              accessibilityRole="header"
+              style={[styles.title, { color: colors.foreground }]}
+            >
+              {DEVICE_LIMIT_FEEDBACK.title}
+            </Text>
+            <Text style={[styles.body, { color: colors.muted }]}>
+              {DEVICE_LIMIT_FEEDBACK.message}
+            </Text>
+            <AppButton
+              label="Ir a Ayuda"
+              onPress={() => {
+                setDeviceLimitVisible(false);
+                router.push("/soporte");
+              }}
+            />
+            <AppButton
+              label="Cancelar"
+              variant="secondary"
+              onPress={() => setDeviceLimitVisible(false)}
+            />
+          </View>
+        </View>
+      </Modal>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -207,8 +327,11 @@ export default function AccesoScreen() {
                 Ingresá con tu correo
               </Text>
               <Text style={[styles.stepHelp, { color: colors.muted }]}>
-                Usá el mismo correo con el que hiciste la compra. Te enviamos un código para
-                entrar, sin contraseñas que recordar.
+                {deviceRecoveryAvailable
+                  ? "Verificá tu acceso con un código nuevo. Si este dispositivo sigue desactivado, soporte debe reactivarlo antes de que puedas entrar."
+                  : deviceReactivated
+                    ? "Este dispositivo fue reactivado. Ingresá con el mismo correo y solicitá un código nuevo para volver a usar la app."
+                    : "Usá el mismo correo con el que hiciste la compra. Te enviamos un código para entrar, sin contraseñas que recordar."}
               </Text>
 
               <TextInput
@@ -236,7 +359,9 @@ export default function AccesoScreen() {
               />
 
               {error ? (
-                <Text style={[styles.error, { color: colors.error }]}>{error}</Text>
+                <Text style={[styles.error, { color: colors.error }]}>
+                  {error}
+                </Text>
               ) : null}
 
               <AppButton
@@ -281,7 +406,9 @@ export default function AccesoScreen() {
               />
 
               {error ? (
-                <Text style={[styles.error, { color: colors.error }]}>{error}</Text>
+                <Text style={[styles.error, { color: colors.error }]}>
+                  {error}
+                </Text>
               ) : null}
 
               <AppButton
@@ -295,7 +422,9 @@ export default function AccesoScreen() {
                   onPress={handleRequestCode}
                   disabled={cooldown > 0 || busy}
                   accessibilityRole="button"
-                  style={({ pressed }) => (pressed ? { opacity: 0.6 } : undefined)}
+                  style={({ pressed }) =>
+                    pressed ? { opacity: 0.6 } : undefined
+                  }
                 >
                   <Text
                     style={[
@@ -303,7 +432,9 @@ export default function AccesoScreen() {
                       { color: cooldown > 0 ? colors.muted : colors.primary },
                     ]}
                   >
-                    {cooldown > 0 ? `Reenviar en ${cooldown}s` : "Reenviar código"}
+                    {cooldown > 0
+                      ? `Reenviar en ${cooldown}s`
+                      : "Reenviar código"}
                   </Text>
                 </Pressable>
 
@@ -314,15 +445,21 @@ export default function AccesoScreen() {
                     setError(null);
                   }}
                   accessibilityRole="button"
-                  style={({ pressed }) => (pressed ? { opacity: 0.6 } : undefined)}
+                  style={({ pressed }) =>
+                    pressed ? { opacity: 0.6 } : undefined
+                  }
                 >
-                  <Text style={[styles.link, { color: colors.primary }]}>Cambiar el correo</Text>
+                  <Text style={[styles.link, { color: colors.primary }]}>
+                    Cambiar el correo
+                  </Text>
                 </Pressable>
               </View>
             </View>
           )}
 
-          {busy ? <ActivityIndicator color={colors.primary} style={styles.spinner} /> : null}
+          {busy ? (
+            <ActivityIndicator color={colors.primary} style={styles.spinner} />
+          ) : null}
 
           <View style={styles.footer}>
             <Pressable
@@ -343,6 +480,20 @@ export default function AccesoScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
+  dialogBackdrop: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 24,
+    backgroundColor: "rgba(0,0,0,0.35)",
+  },
+  dialog: {
+    alignSelf: "center",
+    width: "100%",
+    maxWidth: 420,
+    padding: 24,
+    borderRadius: 20,
+    gap: 16,
+  },
   scroll: {
     flexGrow: 1,
     paddingHorizontal: 24,

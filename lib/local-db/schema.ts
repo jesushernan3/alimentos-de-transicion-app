@@ -157,6 +157,21 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
       `CREATE INDEX IF NOT EXISTS idx_recipe_photos_slug ON recipe_photos(recipeSlug, sortOrder)`,
     ],
   },
+  {
+    version: 3,
+    description: "Tips extra y encabezados de grupos en recetas",
+    statements: [
+      // Migración deliberadamente aditiva: las bases existentes conservan todo
+      // el catálogo y cualquier dato personal que viva en otras tablas.
+      `ALTER TABLE recipes ADD COLUMN extraTips TEXT`,
+      `ALTER TABLE recipe_ingredients ADD COLUMN type TEXT NOT NULL DEFAULT 'ingredient'`,
+      `ALTER TABLE recipe_ingredients ADD COLUMN groupTitle TEXT`,
+      `ALTER TABLE recipe_steps ADD COLUMN type TEXT NOT NULL DEFAULT 'step'`,
+      `ALTER TABLE recipe_steps ADD COLUMN groupTitle TEXT`,
+      `ALTER TABLE recipe_steps ADD COLUMN sortOrder INTEGER`,
+      `ALTER TABLE sync_state ADD COLUMN recipeFormatVersion INTEGER NOT NULL DEFAULT 1`,
+    ],
+  },
 ];
 
 /** Versión de esquema a la que debe llegar la base tras aplicar las migraciones. */

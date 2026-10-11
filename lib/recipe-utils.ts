@@ -1,3 +1,4 @@
+import { ingredientItems } from "./recipe-entries";
 import {
   DIET_LABELS,
   DIFFICULTY_LABELS,
@@ -14,7 +15,7 @@ import type {
   IngredientUnit,
   MealType,
   Recipe,
-  RecipeIngredient,
+  RecipeIngredientItem,
 } from "@/data/types";
 
 /** Normaliza texto para búsquedas: minúsculas y sin acentos. */
@@ -40,7 +41,7 @@ export function scaleQuantity(
   unit: IngredientUnit,
 ): number | null {
   if (quantity === null) return null;
-  if (basePortions <= 0) return quantity;
+  if (basePortions <= 0 || basePortions === targetPortions) return quantity;
 
   const raw = (quantity * targetPortions) / basePortions;
 
@@ -66,6 +67,10 @@ export function scaleQuantity(
 /** Formatea un número evitando decimales innecesarios y usando coma decimal. */
 export function formatQuantity(quantity: number | null): string {
   if (quantity === null) return "";
+  const whole = Math.trunc(quantity);
+  const fraction = Math.abs(quantity - whole);
+  const glyph = fraction === 0.25 ? "¼" : fraction === 0.5 ? "½" : fraction === 0.75 ? "¾" : null;
+  if (glyph) return `${quantity < 0 ? "−" : ""}${Math.abs(whole) ? `${Math.abs(whole)} ` : ""}${glyph}`;
   const rounded = Math.round(quantity * 100) / 100;
   if (Number.isInteger(rounded)) return String(rounded);
   return rounded.toFixed(rounded * 10 % 1 === 0 ? 1 : 2).replace(".", ",");
@@ -73,11 +78,12 @@ export function formatQuantity(quantity: number | null): string {
 
 /** Devuelve la etiqueta de unidad, en plural cuando corresponde. */
 export function formatUnit(unit: IngredientUnit, quantity: number | null): string {
+  if (typeof unit !== "string" || !unit.trim()) return "unidad";
   if (unit === "a-gusto") return UNIT_LABELS["a-gusto"];
-  if (quantity !== null && quantity > 1 && UNIT_LABELS_PLURAL[unit]) {
-    return UNIT_LABELS_PLURAL[unit] as string;
-  }
-  return UNIT_LABELS[unit];
+  const labels = UNIT_LABELS as Record<string, string | undefined>;
+  const plurals = UNIT_LABELS_PLURAL as Record<string, string | undefined>;
+  if (quantity !== null && quantity > 1 && Object.prototype.hasOwnProperty.call(plurals, unit)) return plurals[unit]!;
+  return Object.prototype.hasOwnProperty.call(labels, unit) ? labels[unit]! : unit;
 }
 
 /**
@@ -85,26 +91,39 @@ export function formatUnit(unit: IngredientUnit, quantity: number | null): strin
  * por ejemplo "200 g de avena" o "Sal a gusto".
  */
 export function formatIngredientLine(
-  recipeIngredient: RecipeIngredient,
+  recipeIngredient: RecipeIngredientItem,
   ingredient: Ingredient | undefined,
   basePortions: number,
   targetPortions: number,
 ): string {
-  const name = ingredient?.name ?? recipeIngredient.ingredientId;
-  const note = recipeIngredient.note ? `, ${recipeIngredient.note}` : "";
-
+  const { amount, name } = formatIngredientParts(recipeIngredient, ingredient, basePortions, targetPortions);
   if (recipeIngredient.unit === "a-gusto" || recipeIngredient.quantity === null) {
-    return `${name} a gusto${note}`;
+    const originalName = ingredient?.name ?? recipeIngredient.ingredientId;
+    const note = recipeIngredient.note ? `, ${recipeIngredient.note}` : "";
+    return `${originalName} ${amount}${note}`.trim();
   }
+  return `${amount} de ${name.toLowerCase()}`;
 
-  const scaled = scaleQuantity(
-    recipeIngredient.quantity,
-    basePortions,
-    targetPortions,
-    recipeIngredient.unit,
-  );
-  const unitLabel = formatUnit(recipeIngredient.unit, scaled);
-  return `${formatQuantity(scaled)} ${unitLabel} de ${name.toLowerCase()}${note}`;
+}
+
+/** Mismo formato para texto accesible y cantidad destacada; no altera valores. */
+export function formatIngredientParts(
+  item: RecipeIngredientItem,
+  ingredient: Ingredient | undefined,
+  basePortions: number,
+  targetPortions: number,
+): { amount: string; name: string } {
+  const name = ingredient?.name ?? item.ingredientId;
+  const note = item.note ? `, ${item.note}` : "";
+  if (item.unit === "a-gusto") return { amount: "a gusto", name: `${name}${note}` };
+  if (item.quantity === null) {
+    // Compatibilidad histórica: unidades conocidas sin cantidad eran «a gusto».
+    // Una unidad personalizada nunca desaparece, aunque no tenga cantidad.
+    const known = Object.prototype.hasOwnProperty.call(UNIT_LABELS, item.unit);
+    return { amount: known ? "a gusto" : formatUnit(item.unit, null), name: `${name}${note}` };
+  }
+  const scaled = scaleQuantity(item.quantity, basePortions, targetPortions, item.unit);
+  return { amount: `${formatQuantity(scaled)} ${formatUnit(item.unit, scaled)}`.trim(), name: `${name}${note}` };
 }
 
 /** Formatea minutos como "45 min" o "1 h 15 min". */
@@ -218,7 +237,7 @@ export function filterRecipes<T extends Recipe>(
       MEAL_TYPE_LABELS[recipe.category],
       ...recipe.dietTags.map((diet) => DIET_LABELS[diet]),
       DIFFICULTY_LABELS[recipe.difficulty],
-      ...recipe.ingredients.map((item) => {
+      ...ingredientItems(recipe.ingredients).map((item) => {
         const ingredient = ingredientsById.get(item.ingredientId);
         return ingredient?.name ?? item.ingredientId;
       }),
@@ -269,7 +288,8 @@ export function findRecipesByIngredients<T extends Recipe>(
     const missing: string[] = [];
     let matches = 0;
 
-    recipe.ingredients.forEach((item) => {
+    const realIngredients = ingredientItems(recipe.ingredients);
+    realIngredients.forEach((item) => {
       const ingredient = ingredientsById.get(item.ingredientId);
       const name = normalizeText(ingredient?.name ?? item.ingredientId);
       // Los básicos de despensa no cuentan como faltantes.
@@ -287,7 +307,7 @@ export function findRecipesByIngredients<T extends Recipe>(
       }
     });
 
-    const coverage = recipe.ingredients.length > 0 ? matches / recipe.ingredients.length : 0;
+    const coverage = realIngredients.length > 0 ? matches / realIngredients.length : 0;
     return { recipe, matches, coverage, missing };
   });
 

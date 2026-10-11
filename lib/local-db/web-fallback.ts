@@ -22,7 +22,7 @@ import type {
   LocalRecipePhoto,
   LocalSyncState,
 } from "./catalog-store";
-import { rowToRecipe } from "./catalog-store";
+import { recipeIngredientToLocalRow, recipeStepToLocalRow, rowToRecipe } from "./catalog-store";
 
 const STORAGE_KEY = "adt:web-catalog:v1";
 
@@ -49,14 +49,23 @@ const EMPTY: WebCatalogDocument = {
   ingredients: {},
   collections: {},
   categories: {},
-  syncState: { lastSyncAt: null, lastSuccessAt: null, catalogVersion: 0 },
+  syncState: { lastSyncAt: null, lastSuccessAt: null, catalogVersion: 0, recipeFormatVersion: 1 },
 };
 
 async function read(): Promise<WebCatalogDocument> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
     if (!raw) return { ...EMPTY };
-    return { ...EMPTY, ...(JSON.parse(raw) as WebCatalogDocument) };
+    const parsed = JSON.parse(raw) as Partial<WebCatalogDocument>;
+    return {
+      ...EMPTY,
+      ...parsed,
+      syncState: {
+        ...EMPTY.syncState,
+        ...(parsed.syncState ?? {}),
+        recipeFormatVersion: parsed.syncState?.recipeFormatVersion ?? 1,
+      },
+    };
   } catch {
     return { ...EMPTY };
   }
@@ -119,20 +128,13 @@ export async function applyChanges(input: ApplyChangesInput): Promise<void> {
         portions: recipe.portions,
         nutrition: recipe.nutrition ? JSON.stringify(recipe.nutrition) : null,
         tips: recipe.tips,
+        extraTips: recipe.extraTips ?? null,
         featured: recipe.featured ? 1 : 0,
         communitySaves: recipe.communitySaves,
         updatedAt: recipe.updatedAt,
       },
-      ingredients: recipe.ingredients.map((item) => ({
-        ingredientSlug: item.ingredientSlug,
-        quantity: item.quantity,
-        unit: item.unit,
-        note: item.note,
-      })),
-      steps: recipe.steps.map((step) => ({
-        stepNumber: step.stepNumber,
-        description: step.description,
-      })),
+      ingredients: recipe.ingredients.map((item, index) => recipeIngredientToLocalRow(item, index)),
+      steps: recipe.steps.map((step, index) => recipeStepToLocalRow(step, index)),
       diets: recipe.dietTagSlugs,
       collections: recipe.collectionSlugs,
       photos:
@@ -170,6 +172,7 @@ export async function applyChanges(input: ApplyChangesInput): Promise<void> {
     lastSyncAt: input.serverTime,
     lastSuccessAt: new Date().toISOString(),
     catalogVersion: input.catalogVersion,
+    recipeFormatVersion: input.recipeFormatVersion ?? 1,
   };
 
   await write(doc);

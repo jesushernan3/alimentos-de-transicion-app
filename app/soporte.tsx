@@ -28,32 +28,44 @@ const FAQ = [
   {
     question: "No me llega el código de acceso",
     answer:
-      "Primero revisá Spam, Correo no deseado o Promociones. El código puede tardar unos minutos y vence a los 10 minutos. Si venció o no llegó, volvé a la pantalla de acceso y pedí uno nuevo. Si el problema continúa, escribinos desde esta pantalla.",
+      "Revisá la carpeta de spam o correo no deseado. El código llega en un par de minutos y vence a los 10. Si pasó más tiempo, pedí uno nuevo desde la pantalla de acceso. Si sigue sin llegar, escribinos y lo resolvemos.",
   },
   {
     question: "Compré la app pero no reconoce mi acceso",
     answer:
-      "Ingresá con el mismo correo que usaste al realizar la compra. Es el correo que quedó asociado a tu acceso. Si ya lo estás usando y aun así no podés entrar, escribinos e indicá el número de pedido para que podamos revisarlo.",
+      "Suele pasar cuando el correo de la compra es distinto al que estás usando para entrar. Probá con el correo donde recibiste la confirmación de compra. Si no funciona, escribinos con el número de pedido.",
   },
   {
     question: "¿Puedo usar la app sin internet?",
     answer:
-      "Sí. Las recetas y el contenido descargado quedan disponibles en tu teléfono para que puedas consultarlos sin conexión. Algunas fotos adicionales pueden descargarse cuando abrís una receta por primera vez. Para recibir recetas nuevas, cambios o actualizaciones necesitás conectarte a internet.",
+      "Sí. Después de descargar el contenido con conexión, podés consultar las recetas y las imágenes que ya estén guardadas en este teléfono sin internet. Las fotos secundarias se guardan cuando las ves. Necesitás conexión para ingresar por primera vez y recibir contenido nuevo. Si soporte desactiva este dispositivo y la app recibe ese aviso, el acceso queda bloqueado también sin conexión hasta que lo reactiven y vuelvas a ingresar con un código nuevo.",
   },
   {
     question: "Cambié de teléfono, ¿pierdo mi acceso?",
     answer:
-      "No. Instalá Alimentos de Transición en el teléfono nuevo e ingresá con el mismo correo asociado a tu compra. El contenido disponible se descargará nuevamente. Tus favoritos, plan semanal y lista de compras se guardan de forma local en cada dispositivo, por lo que no se transfieren automáticamente al teléfono nuevo.",
+      "No. Instalá la aplicación en el teléfono nuevo e ingresá con el mismo correo. Tu acceso permite hasta 3 dispositivos activos. Si ya alcanzaste ese límite, cerrá sesión en uno de los anteriores o contactá a soporte para liberarlo. Tus recetas se descargan de nuevo; los favoritos, la planificación y la lista de compras se guardan en cada teléfono y no se transfieren automáticamente.",
   },
   {
     question: "¿Cómo recibo recetas y contenido nuevo?",
     answer:
-      "Cuando abrís la app con internet, Alimentos de Transición busca automáticamente las actualizaciones disponibles. También podés comprobarlas manualmente desde Ajustes, en la sección «Contenido offline», tocando «Buscar».",
+      "La aplicación busca contenido nuevo sola cada vez que la abrís con internet. También podés hacerlo a mano desde Ajustes, en «Buscar contenido nuevo».",
   },
   {
     question: "¿Qué pasa si cierro sesión?",
     answer:
-      "Las recetas descargadas, tus favoritos, el planificador y la lista de compras permanecen guardados en ese teléfono. Mientras no vuelvas a iniciar sesión, no vas a recibir recetas nuevas ni actualizaciones de contenido.",
+      "Tus recetas descargadas, favoritos, planificador y lista de compras se conservan en este teléfono. Mientras no vuelvas a iniciar sesión, no vas a recibir recetas nuevas ni actualizaciones de contenido. Cerrar sesión también libera este dispositivo del límite de 3 cuando el servidor recibe la baja. Si no hay conexión, la app reintenta la baja al recuperar internet. Para volver a consultar tu contenido, ingresá con el mismo correo y un código nuevo, si hay lugar. Si el dispositivo fue desactivado por soporte, debe reactivarlo antes de que puedas entrar.",
+  },
+  {
+    question: "¿En cuántos dispositivos puedo usar mi acceso?",
+    answer: "Podés usar Alimentos de Transición en hasta 3 dispositivos al mismo tiempo.",
+  },
+  {
+    question: "¿Cómo habilito un dispositivo nuevo si ya usé los 3 lugares?",
+    answer: "Cerrá sesión en uno de los dispositivos que ya no uses. Al cerrar sesión, ese dispositivo libera automáticamente su lugar. Después podés ingresar en el nuevo dispositivo con tu correo y código de acceso. Necesitás conexión para confirmar la liberación; si cerrás sesión sin internet, se completa al recuperar la conexión.",
+  },
+  {
+    question: "Ya no tengo acceso a uno de mis dispositivos, ¿qué hago?",
+    answer: "Si no podés cerrar sesión desde el dispositivo anterior, escribinos desde Ayuda. Podemos liberar ese dispositivo manualmente para que uses tu acceso en otro.",
   },
 ];
 
@@ -80,15 +92,13 @@ export default function SoporteScreen() {
       `Recetas en el teléfono: ${recipes.length}`,
       `Última actualización: ${lastSyncAt ?? "nunca"}`,
       `Última verificación: ${verifiedAt ?? "nunca"}`,
-      `Versión: ${Constants.expoConfig?.version ?? "1.0.0"}`,
+      `Versión: ${Constants.expoConfig?.version ?? "no disponible"}`,
       `Sistema: ${Platform.OS} ${Platform.Version ?? ""}`,
     ].join("\n");
 
     const url = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(
       "Soporte — Alimentos de Transición",
-    )}&body=${encodeURIComponent(
-      `Hola, necesito ayuda con:\n\n[Contanos acá qué está pasando]\n${diagnostics}`,
-    )}`;
+    )}&body=${encodeURIComponent(`[Contanos acá qué está pasando]\n${diagnostics}`)}`;
 
     const canOpen = await Linking.canOpenURL(url);
     if (canOpen) await Linking.openURL(url);
@@ -100,8 +110,7 @@ export default function SoporteScreen() {
 
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={[styles.intro, { color: colors.muted }]}>
-          Encontrá respuestas rápidas sobre acceso, contenido, uso sin conexión y cambios de
-          dispositivo. Si no encontrás lo que necesitás, escribinos desde esta misma pantalla.
+          Encontrá respuestas rápidas sobre acceso, contenido, uso sin conexión y cambios de dispositivo. Si no encontrás lo que necesitás, escribinos desde esta misma pantalla.
         </Text>
 
         <View style={styles.faqList}>
@@ -147,18 +156,10 @@ export default function SoporteScreen() {
           <Text style={[styles.contactTitle, { color: colors.foreground }]}>
             ¿Necesitás más ayuda?
           </Text>
-
           <Text style={[styles.contactBody, { color: colors.muted }]}>
-            Escribinos a {SUPPORT_EMAIL} y contanos qué problema estás teniendo. Para ayudarte más
-            rápido, el mensaje incluye automáticamente algunos datos técnicos de la app y del
-            dispositivo.
+            Escribinos a {SUPPORT_EMAIL} y contanos qué problema estás teniendo. Para ayudarte más rápido, el mensaje incluye automáticamente algunos datos técnicos de la app y del dispositivo.
           </Text>
-
-          <AppButton
-            label="Contactar a soporte"
-            icon="mail"
-            onPress={handleContact}
-          />
+          <AppButton label="Contactar a soporte" icon="mail" onPress={handleContact} />
         </View>
       </ScrollView>
     </ScreenContainer>

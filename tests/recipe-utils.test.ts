@@ -1,3 +1,4 @@
+import { ingredientItems, preparationSteps } from "../lib/recipe-entries";
 import { describe, expect, it } from "vitest";
 
 import { BUNDLED_CATALOG } from "../data/catalog";
@@ -31,7 +32,7 @@ describe("integridad del catálogo", () => {
   it("referencia únicamente ingredientes existentes", () => {
     const missing: string[] = [];
     BUNDLED_CATALOG.recipes.forEach((recipe) => {
-      recipe.ingredients.forEach((item) => {
+      ingredientItems(recipe.ingredients).forEach((item) => {
         if (!ingredientsById.has(item.ingredientId)) {
           missing.push(`${recipe.id} → ${item.ingredientId}`);
         }
@@ -42,7 +43,7 @@ describe("integridad del catálogo", () => {
 
   it("tiene pasos numerados de forma consecutiva desde 1", () => {
     BUNDLED_CATALOG.recipes.forEach((recipe) => {
-      const numbers = recipe.steps.map((step) => step.stepNumber);
+      const numbers = preparationSteps(recipe.steps).map((step) => step.stepNumber);
       expect(numbers).toEqual(numbers.map((_, index) => index + 1));
     });
   });
@@ -87,7 +88,7 @@ describe("scaleQuantity", () => {
 describe("formatIngredientLine", () => {
   it("escribe la cantidad, la unidad y el nombre", () => {
     const recipe = BUNDLED_CATALOG.recipes[0];
-    const first = recipe.ingredients[0];
+    const first = ingredientItems(recipe.ingredients)[0];
     const line = formatIngredientLine(
       first,
       ingredientsById.get(first.ingredientId),

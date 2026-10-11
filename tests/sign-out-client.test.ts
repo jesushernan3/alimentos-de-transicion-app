@@ -42,7 +42,8 @@ describe("qué borra el cierre de sesión", () => {
   it("elimina el token y el perfil de la credencial", () => {
     for (const clave of CLAVES_DE_SESION) {
       const constante = clave === "adt.access.token" ? "TOKEN_KEY" : "PROFILE_KEY";
-      expect(funcion).toContain(`secureStorage.remove(${constante})`);
+      expect(funcion).toContain("await invalidate(false)");
+      expect(contexto).toContain(`secureStorage.remove(${constante})`);
     }
   });
 
@@ -81,7 +82,9 @@ describe("qué borra el cierre de sesión", () => {
   });
 
   it("limpia el estado en memoria antes de las operaciones lentas", () => {
-    const posicionEstado = funcion.indexOf('setState("signed-out")');
+    const posicionEstado = funcion.indexOf("await invalidate(false)");
+    expect(contexto).toContain("setToken(null)");
+    expect(contexto).toContain("setProfile(null)");
     const posicionServidor = funcion.indexOf("api.access.signOut.mutate");
 
     // Si el estado se limpiara después de la llamada al servidor, una pantalla
@@ -119,7 +122,7 @@ describe("la confirmación antes de cerrar sesión", () => {
   });
 
   it("advierte que no llegarán actualizaciones mientras esté desconectado", () => {
-    expect(dialogo).toContain("no vas a recibir nuevas recetas");
+    expect(dialogo).toContain("no vas a recibir recetas nuevas ni actualizaciones de contenido");
   });
 
   it("no ofrece borrar contenido dentro del cierre de sesión", () => {
@@ -167,9 +170,8 @@ describe("acceso a pantallas protegidas sin sesión", () => {
     expect(publicas).not.toContain("/coleccion");
   });
 
-  it("mantiene apagado el interruptor de verificación visual", () => {
-    // En `true` deja entrar sin credencial: en el producto entregado sería un
-    // acceso libre a todo el contenido.
-    expect(compuerta).toContain("const SKIP_ACCESS_FOR_PREVIEW = false");
+  it("no contiene un bypass de verificación visual", () => {
+    expect(compuerta).not.toContain("SKIP_ACCESS_FOR_PREVIEW");
+    expect(compuerta).toContain('state === "signed-out" || state === "revoked"');
   });
 });

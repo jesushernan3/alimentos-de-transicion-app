@@ -58,9 +58,17 @@ export type IngredientUnit =
   | "taza"
   | "unidad"
   | "puñado"
-  | "a-gusto";
+  | "a-gusto"
+  | (string & {});
 
-export interface RecipeIngredient {
+/** Encabezado informativo: no tiene cantidad, unidad ni número de paso. */
+export interface RecipeGroup {
+  type: "group";
+  title: string;
+}
+
+export interface RecipeIngredientItem {
+  type?: "ingredient";
   ingredientId: string;
   /** Cantidad para la cantidad base de porciones de la receta. */
   quantity: number | null;
@@ -69,10 +77,15 @@ export interface RecipeIngredient {
   note?: string;
 }
 
-export interface RecipeStep {
+export type RecipeIngredient = RecipeIngredientItem | RecipeGroup;
+
+export interface RecipeStepItem {
+  type?: "step";
   stepNumber: number;
   description: string;
 }
+
+export type RecipeStep = RecipeStepItem | RecipeGroup;
 
 export interface Nutrition {
   calories: number;
@@ -109,7 +122,9 @@ export interface Recipe {
   featured: boolean;
   /** Guardados por la comunidad, usado sólo para ordenar la sección social. */
   communitySaves: number;
+  /** Campo histórico: representa Consejos, no el nuevo bloque Tips. */
   tips?: string;
+  extraTips?: string;
   createdAt: string;
 }
 

@@ -91,6 +91,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const [initialSyncRunning, setInitialSyncRunning] = useState(false);
 
   const didBootstrapSync = useRef(false);
+  useEffect(() => { if (accessState !== "signed-in") didBootstrapSync.current = false; }, [accessState]);
 
   /** Relee la base local y refresca el estado de la interfaz. */
   const reload = useCallback(async () => {
@@ -117,7 +118,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
 
   const syncNow = useCallback(
     async ({ force = false }: { force?: boolean } = {}) => {
-      if (!token) return;
+      if (!token || accessState !== "signed-in") return;
 
       const isInitial = recipes.length === 0;
       if (isInitial) setInitialSyncRunning(true);
@@ -136,7 +137,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       // El progreso se mantiene un instante para que el mensaje final sea visible.
       setTimeout(() => setSyncProgress(null), outcome.success ? 900 : 3200);
     },
-    [token, recipes.length, reload],
+    [token, accessState, recipes.length, reload],
   );
 
   /**

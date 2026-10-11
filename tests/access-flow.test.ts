@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm";
 import crypto from "node:crypto";
 
 import { getDb } from "../server/db";
-import { accessCodes, licenses, sessions, users } from "../drizzle/schema";
+import { accessCodes, licenseDevices, licenseEvents, licenses, sessions, users } from "../drizzle/schema";
 import {
   checkAccessStatus,
   grantLicense,
@@ -144,7 +144,7 @@ describe("flujo de acceso completo", () => {
   it("acepta el código correcto y emite una sesión utilizable", async () => {
     const code = await readLatestCode(BUYER);
     usedCode = code;
-    const outcome = await verifyAccessCode(BUYER, code, { label: "Prueba", platform: "test" });
+    const outcome = await verifyAccessCode(BUYER, code, { deviceId: "fixture-main-device-0123456789", label: "Prueba", platform: "test" });
 
     expect(outcome.result.authorized).toBe(true);
     expect(outcome.result.status).toBe("active");
@@ -235,7 +235,9 @@ describe("limpieza de datos de prueba", () => {
       }
 
       await db.delete(accessCodes).where(eq(accessCodes.email, normalized));
-      await db.delete(licenses).where(eq(licenses.email, normalized));
+      await db.delete(licenseDevices).where(eq(licenseDevices.email, normalized));
+    await db.delete(licenseEvents).where(eq(licenseEvents.email, normalized));
+    await db.delete(licenses).where(eq(licenses.email, normalized));
       await db.delete(users).where(eq(users.email, normalized));
     }
 

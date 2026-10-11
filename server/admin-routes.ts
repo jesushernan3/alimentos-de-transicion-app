@@ -31,7 +31,6 @@ import {
   setRecipeStatus,
   updateRecipe,
   upsertCategory,
-  upsertCollection,
   upsertDietTag,
 } from "./catalog-admin";
 import {
@@ -42,8 +41,11 @@ import {
   setLicenseStatus,
 } from "./access";
 import { applyImport, CSV_TEMPLATE, exportCsv, validateCsv } from "./csv-import";
+import { bulkGrantLicenses } from "./bulk-licenses";
+import { listLicenseDevices, reactivateLicenseDevice, revokeLicenseDevice } from "./device-access";
 import { isEmailProviderConfigured } from "./mailer";
 import { uploadCatalogImage } from "./image-upload";
+import { saveCollectionFromAdmin } from "./collection-editor";
 import {
   addRecipePhoto,
   deleteRecipePhoto,
@@ -54,6 +56,16 @@ import {
   setRecipeCover,
 } from "./recipe-photos";
 import { renderAdminPage } from "./admin-html";
+import { retryShopifyDeliveryEmail } from "./shopify-delivery-email";
+import {
+  getShopifyReconciliationStatus,
+  reconcileRecentShopifyOrders,
+  reconcileShopifyOrder,
+} from "./shopify-reconciliation";
+import {
+  getShopifyReconciliationMonitoringStatus,
+  simulateAutomaticReconciliationFailure,
+} from "./shopify-reconciliation-monitoring";
 import { ADMIN_CLIENT_JS } from "./admin-client";
 
 /** Envuelve un manejador async para que los errores devuelvan JSON legible. */
@@ -77,6 +89,12 @@ export function registerAdminRoutes(app: Express): void {
   // El script del panel se sirve antes de exigir sesión porque el navegador lo
   // pide como recurso estático y ya está protegido por la cookie en las APIs.
   app.get("/admin/app.js", (_req, res) => {
+    // Sin caché: el panel es una herramienta interna que cambia seguido, y una
+    // copia guardada en el navegador hace que las mejoras publicadas no
+    // aparezcan hasta que el usuario borre la caché a mano.
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     res.type("application/javascript").send(ADMIN_CLIENT_JS);
   });
 
@@ -264,7 +282,7 @@ export function registerAdminRoutes(app: Express): void {
 
   app.post(
     "/admin/api/collections",
-    handle(async (req) => ({ id: await upsertCollection(req.body) })),
+    handle(async (req) => saveCollectionFromAdmin(req.body)),
   );
 
   app.delete(
@@ -356,6 +374,66 @@ export function registerAdminRoutes(app: Express): void {
     ),
   );
 
+  app.get(
+    "/admin/api/licenses/:licenseId/devices",
+    handle(async (req) => {
+      const licenseId = Number(req.params.licenseId);
+      if (!Number.isInteger(licenseId) || licenseId <= 0) {
+        throw new Error("La licencia indicada no es válida.");
+      }
+      return listLicenseDevices(licenseId);
+    }),
+  );
+
+  app.post(
+    "/admin/api/licenses/:licenseId/devices/:deviceId/revoke",
+    handle(async (req) => {
+      const licenseId = Number(req.params.licenseId);
+      const deviceId = Number(req.params.deviceId);
+      if (
+        !Number.isInteger(licenseId) ||
+        licenseId <= 0 ||
+        !Number.isInteger(deviceId) ||
+        deviceId <= 0
+      ) {
+        throw new Error("El dispositivo indicado no es válido.");
+      }
+
+      const revoked = await revokeLicenseDevice(
+        licenseId,
+        deviceId,
+        "panel",
+        req.body?.reason
+          ? String(req.body.reason).slice(0, 240)
+          : "Revocado manualmente desde /admin",
+      );
+      if (!revoked)
+        throw new Error("No encontramos ese dispositivo para esta licencia.");
+      return { ok: true };
+    }),
+  );
+
+  app.post(
+    "/admin/api/licenses/:licenseId/devices/:deviceId/reactivate",
+    handle(async (req) => {
+      const licenseId = Number(req.params.licenseId);
+      const deviceId = Number(req.params.deviceId);
+      if (
+        !Number.isInteger(licenseId) ||
+        licenseId <= 0 ||
+        !Number.isInteger(deviceId) ||
+        deviceId <= 0
+      ) {
+        throw new Error("El dispositivo indicado no es válido.");
+      }
+
+      const reactivated = await reactivateLicenseDevice(licenseId, deviceId);
+      if (!reactivated)
+        throw new Error("No encontramos ese dispositivo para esta licencia.");
+      return { ok: true };
+    }),
+  );
+
   app.get("/admin/api/codes", handle(async () => listPendingCodes()));
 
   // --- Fotos del catálogo ---------------------------------------------------
@@ -394,5 +472,60 @@ export function registerAdminRoutes(app: Express): void {
       );
       return { ok: true };
     }),
+  );
+
+  /**
+   * Alta masiva de licencias desde una lista pegada a mano.
+   *
+   * Sólo accesible con sesión de administrador, igual que el resto de este
+   * bloque: el flujo público de acceso no cambia y nadie obtiene licencia sin
+   * que se la otorguen explícitamente desde acá.
+   */
+  app.post(
+    "/admin/api/licenses/bulk",
+    handle(async (req) =>
+      bulkGrantLicenses({
+        raw: String(req.body?.emails ?? ""),
+        label: req.body?.label ?? null,
+        actorEmail: "panel",
+      }),
+    ),
+  );
+
+  app.post(
+    "/admin/api/shopify/delivery-email/retry",
+    handle(async (req) => {
+      const orderId = String(req.body?.orderId ?? "").trim();
+      if (!/^\d+$/.test(orderId)) throw new Error("ID de pedido inválido.");
+      return { result: await retryShopifyDeliveryEmail(orderId) };
+    }),
+  );
+
+  // --- Reconciliación Shopify -----------------------------------------------
+  // Estas rutas están después de `requireAdmin`: nunca quedan expuestas al
+  // flujo público y reutilizan el mismo servicio que el webhook y el cron.
+
+  app.get(
+    "/admin/api/shopify/reconciliation/status",
+    handle(async () => {
+      const reconciliation = await getShopifyReconciliationStatus();
+      const monitoring = await getShopifyReconciliationMonitoringStatus();
+      return { ...reconciliation, monitoring };
+    }),
+  );
+
+  app.post(
+    "/admin/api/shopify/reconciliation/monitoring/simulate-error",
+    handle(async () => ({ run: await simulateAutomaticReconciliationFailure() })),
+  );
+
+  app.post(
+    "/admin/api/shopify/reconciliation/recent",
+    handle(async () => reconcileRecentShopifyOrders("manual_recent")),
+  );
+
+  app.post(
+    "/admin/api/shopify/reconciliation/order",
+    handle(async (req) => reconcileShopifyOrder(String(req.body?.identifier ?? ""))),
   );
 }

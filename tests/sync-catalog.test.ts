@@ -50,7 +50,7 @@ describe("descarga completa", () => {
       if (!recipe.imageUrl) sinImagen.push(recipe.slug);
       if (recipe.collectionSlugs.length === 0) sinColeccion.push(recipe.slug);
 
-      const numbers = recipe.steps.map((step) => step.stepNumber);
+      const numbers = recipe.steps.filter((step) => step.type !== "group").map((step) => step.stepNumber);
       const sorted = [...numbers].sort((a, b) => a - b);
       if (JSON.stringify(numbers) !== JSON.stringify(sorted)) pasosDesordenados.push(recipe.slug);
     }
@@ -70,6 +70,7 @@ describe("descarga completa", () => {
     const missing: string[] = [];
     for (const recipe of result.recipes as SyncRecipe[]) {
       for (const line of recipe.ingredients) {
+        if (line.type === "group") continue;
         if (!known.has(line.ingredientSlug)) missing.push(`${recipe.slug}:${line.ingredientSlug}`);
       }
     }

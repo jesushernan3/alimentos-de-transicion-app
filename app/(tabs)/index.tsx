@@ -58,6 +58,12 @@ function mealSuggestionSentence(meal: MealType): string {
   return MEAL_SENTENCES[meal] ?? "Es un buen momento para cocinar algo rico.";
 }
 
+/** Separación decorativa entre bloques, adaptada al tema actual. */
+function HomeSectionDivider() {
+  const colors = useColors();
+  return <View accessible={false} style={[styles.divider, { backgroundColor: colors.border }]} />;
+}
+
 export default function HomeScreen() {
   const colors = useColors();
   const router = useRouter();
@@ -235,6 +241,8 @@ export default function HomeScreen() {
           </View>
         ) : null}
 
+        {collections.length > 0 ? <HomeSectionDivider /> : null}
+
         <View style={styles.section}>
           <SectionHeader
             title="Recetas recomendadas"
@@ -260,6 +268,8 @@ export default function HomeScreen() {
           </ScrollView>
         </View>
 
+        <HomeSectionDivider />
+
         <View style={styles.section}>
           <SectionHeader
             title="Explorar por categorías"
@@ -277,6 +287,8 @@ export default function HomeScreen() {
             ))}
           </View>
         </View>
+
+        <HomeSectionDivider />
 
         <View style={styles.section}>
           <SectionHeader
@@ -300,6 +312,8 @@ export default function HomeScreen() {
             ))}
           </ScrollView>
         </View>
+
+        <HomeSectionDivider />
 
         <View style={styles.section}>
           <SectionHeader
@@ -350,7 +364,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   greetingTitle: {
-    ...display(26, "700"),
+    ...display(29, "700"),
   },
   subtitle: {
     fontSize: 15,
@@ -424,6 +438,11 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   section: {
+    marginTop: 28,
+  },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    marginHorizontal: 20,
     marginTop: 28,
   },
   carousel: {

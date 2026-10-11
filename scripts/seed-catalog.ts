@@ -268,6 +268,7 @@ async function seedRecipes() {
 
     let order = 0;
     for (const item of recipe.ingredients) {
+      if (item.type === "group") continue;
       const ingredientId = ingredientIdBySlug.get(item.ingredientId);
       if (!ingredientId) {
         console.warn(`  ! Ingrediente desconocido "${item.ingredientId}" en ${recipe.slug}`);
@@ -285,6 +286,7 @@ async function seedRecipes() {
     }
 
     for (const step of recipe.steps) {
+      if (step.type === "group") continue;
       await db.insert(recipeSteps).values({
         recipeId,
         stepNumber: step.stepNumber,

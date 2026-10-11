@@ -15,7 +15,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 
-import { accessCodes, licenses, sessions, users } from "../drizzle/schema";
+import { accessCodes, licenseDevices, licenseEvents, licenses, sessions, users } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import {
   SESSION_INACTIVITY_DAYS,
@@ -46,7 +46,7 @@ async function abrirSesion(codigo: string): Promise<{ token: string; hash: strin
     deliveredVia: "manual",
   });
 
-  const outcome = await verifyAccessCode(CORREO, codigo, { label: "Prueba", platform: "test" });
+  const outcome = await verifyAccessCode(CORREO, codigo, { deviceId: "fixture-main-device-0123456789", label: "Prueba", platform: "test" });
   const token = outcome.result.token ?? "";
   expect(token).toBeTruthy();
 
@@ -83,7 +83,9 @@ afterAll(async () => {
     await db.delete(sessions).where(eq(sessions.userId, fila.id));
   }
   await db.delete(accessCodes).where(eq(accessCodes.email, normalizado));
-  await db.delete(licenses).where(eq(licenses.email, normalizado));
+  await db.delete(licenseDevices).where(eq(licenseDevices.email, normalizado));
+    await db.delete(licenseEvents).where(eq(licenseEvents.email, normalizado));
+    await db.delete(licenses).where(eq(licenses.email, normalizado));
   await db.delete(users).where(eq(users.email, normalizado));
 }, 60000);
 

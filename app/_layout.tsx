@@ -1,6 +1,5 @@
 import "@/global.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -23,6 +22,7 @@ import { UserDataProvider } from "@/lib/user-data-context";
 import { AccessProvider } from "@/lib/access-context";
 import { ThemeSync } from "@/components/theme-sync";
 import { AccessGate } from "@/components/access-gate";
+import { AccessNavigator } from "@/components/access-navigator";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -92,26 +92,7 @@ export default function RootLayout() {
               <CatalogProvider>
                 <ThemeSync />
                 <AccessGate />
-                <Stack screenOptions={{ headerShown: false }}>
-                  <Stack.Screen name="(tabs)" />
-                  <Stack.Screen name="acceso" options={{ animation: "fade" }} />
-                  <Stack.Screen name="descarga-inicial" options={{ animation: "fade" }} />
-                  <Stack.Screen name="onboarding" options={{ animation: "fade" }} />
-                  <Stack.Screen name="receta/[id]" />
-                  <Stack.Screen name="categoria/[slug]" />
-                  <Stack.Screen name="coleccion/[slug]" />
-                  <Stack.Screen name="colecciones" />
-                  <Stack.Screen name="favoritos" />
-                  <Stack.Screen name="buscar" options={{ animation: "fade" }} />
-                  <Stack.Screen name="que-cocinar" />
-                  <Stack.Screen name="seleccionar-receta" options={{ presentation: "modal" }} />
-                  <Stack.Screen name="ajustes" />
-                  <Stack.Screen name="soporte" />
-                  <Stack.Screen name="perfil/editar" options={{ presentation: "modal" }} />
-                  <Stack.Screen name="legal/privacidad" />
-                  <Stack.Screen name="legal/terminos" />
-                  <Stack.Screen name="oauth/callback" />
-                </Stack>
+                <AccessNavigator />
                 <StatusBar style="auto" />
               </CatalogProvider>
             </UserDataProvider>

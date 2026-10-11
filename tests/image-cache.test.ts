@@ -85,6 +85,7 @@ vi.mock("@/lib/resolve-asset-url", () => ({
 
 const {
   countMissingImages,
+  discardCorruptCachedImage,
   getCachedImage,
   getCacheSize,
   prefetchImages,
@@ -118,6 +119,29 @@ describe("rutas del caché", () => {
 
     expect(second).toBe(first);
     expect(attempts.get("https://servidor.example" + url)).toBe(1);
+  });
+
+  it("descarta una ruta indexada cuyo archivo desapareció y vuelve a la URL remota", async () => {
+    const url = "/manus-storage/catalog/thumb/receta.webp";
+    const local = await getCachedImage(url);
+    files.delete(local!);
+    responses.set("https://servidor.example" + url, "throw");
+
+    expect(await getCachedImage(url)).toBe("https://servidor.example" + url);
+    expect(attempts.get("https://servidor.example" + url)).toBe(2);
+    expect(await countMissingImages([url])).toBe(1);
+  });
+
+  it("borra un archivo corrupto del caché sin permitir borrar una ruta distinta", async () => {
+    const url = "/manus-storage/catalog/thumb/receta.webp";
+    const local = (await getCachedImage(url))!;
+    await discardCorruptCachedImage(url, "file:///ruta/ajena.webp");
+    expect(files.has(local)).toBe(true);
+
+    await discardCorruptCachedImage(url, local);
+    expect(files.has(local)).toBe(false);
+    responses.set("https://servidor.example" + url, "throw");
+    expect(await getCachedImage(url)).toBe("https://servidor.example" + url);
   });
 
   it("no vuelve a procesar una ruta local ya resuelta", async () => {

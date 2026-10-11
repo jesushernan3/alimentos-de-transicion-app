@@ -10,7 +10,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import { grantLicense, requestAccessCode, setLicenseStatus, verifyAccessCode } from "../server/access";
 import { getDb } from "../server/db";
-import { accessCodes, licenses, users } from "../drizzle/schema";
+import { accessCodes, licenseDevices, licenseEvents, licenses, sessions, users } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
 
 const TEST_EMAIL = `licencia.prueba.${Date.now()}@ejemplo-adt.com`;
@@ -75,6 +75,10 @@ afterAll(async () => {
   if (!db) return;
 
   await db.delete(accessCodes).where(eq(accessCodes.email, TEST_EMAIL));
+  const ownUsers = await db.select().from(users).where(eq(users.email, TEST_EMAIL));
+  for (const u of ownUsers) await db.delete(sessions).where(eq(sessions.userId, u.id));
+  await db.delete(licenseDevices).where(eq(licenseDevices.email, TEST_EMAIL));
+  await db.delete(licenseEvents).where(eq(licenseEvents.email, TEST_EMAIL));
   await db.delete(licenses).where(eq(licenses.email, TEST_EMAIL));
   await db.delete(users).where(eq(users.email, TEST_EMAIL));
 });
@@ -137,7 +141,7 @@ describe("otorgamiento de licencia", () => {
 
     await requestAccessCode(TEST_EMAIL);
     const code = await resolveCode(TEST_EMAIL);
-    const outcome = await verifyAccessCode(TEST_EMAIL, code);
+    const outcome = await verifyAccessCode(TEST_EMAIL, code, { deviceId: "license-grant-device-0123456789" });
 
     expect(outcome.result.authorized).toBe(true);
     expect(outcome.result.status).toBe("active");

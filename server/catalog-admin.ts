@@ -2,6 +2,7 @@ import { and, desc, eq, like, sql } from "drizzle-orm";
 
 import {
   categories,
+  catalogState,
   collections,
   dietTags,
   ingredients,
@@ -54,7 +55,8 @@ async function uniqueRecipeSlug(base: string, excludeId?: number): Promise<strin
   }
 }
 
-export interface AdminIngredientInput {
+export interface AdminIngredientItemInput {
+  type?: "ingredient";
   /** Nombre visible; se convierte en slug para reutilizar el maestro. */
   name: string;
   quantity: number | null;
@@ -63,10 +65,25 @@ export interface AdminIngredientInput {
   pantryCategory?: string;
 }
 
-export interface AdminStepInput {
+export interface AdminIngredientGroupInput {
+  type: "group";
+  title: string;
+}
+
+export type AdminIngredientInput = AdminIngredientItemInput | AdminIngredientGroupInput;
+
+export interface AdminStepItemInput {
+  type?: "step";
   description: string;
   durationMinutes?: number | null;
 }
+
+export interface AdminStepGroupInput {
+  type: "group";
+  title: string;
+}
+
+export type AdminStepInput = AdminStepItemInput | AdminStepGroupInput;
 
 export interface AdminRecipeInput {
   title: string;
@@ -90,6 +107,8 @@ export interface AdminRecipeInput {
     fiber: number;
   } | null;
   tips?: string | null;
+  /** Nuevo bloque Tips; `undefined` en una actualización conserva el valor actual. */
+  extraTips?: string | null;
   notes?: string | null;
   featured?: boolean;
   status?: "draft" | "published" | "archived";
@@ -97,13 +116,114 @@ export interface AdminRecipeInput {
   steps: AdminStepInput[];
 }
 
+/**
+ * Valida todo el payload editorial antes de tocar la base.
+ *
+ * Además de proteger las columnas de tamaño acotado, esta función mantiene la
+ * distinción estricta entre encabezados y líneas normales: un grupo nunca puede
+ * llegar al maestro de ingredientes ni guardar cantidad/unidad accidentalmente.
+ */
+export function validateAdminRecipeInput(input: AdminRecipeInput): void {
+  if (!input || typeof input !== "object") throw new Error("La receta no es válida.");
+  if (typeof input.title !== "string" || !input.title.trim() || input.title.trim().length > 240) {
+    throw new Error("El título de la receta es obligatorio y no puede superar 240 caracteres.");
+  }
+  if (input.slug !== undefined && input.slug.trim().length > 160) {
+    throw new Error("El identificador de la receta no puede superar 160 caracteres.");
+  }
+  if (!Number.isFinite(input.prepTime) || !Number.isFinite(input.cookingTime) ||
+      !Number.isFinite(input.portions) || input.portions <= 0) {
+    throw new Error("Los tiempos y las porciones deben ser números válidos.");
+  }
+  if (!["facil", "intermedia", "avanzada"].includes(input.difficulty)) {
+    throw new Error("La dificultad de la receta no es válida.");
+  }
+  if (input.status !== undefined && !["draft", "published", "archived"].includes(input.status)) {
+    throw new Error("El estado de la receta no es válido.");
+  }
+  for (const [field, value] of [
+    ["tips", input.tips],
+    ["extraTips", input.extraTips],
+    ["notes", input.notes],
+  ] as const) {
+    if (value !== undefined && value !== null && typeof value !== "string") {
+      throw new Error(`${field} debe ser texto o nulo.`);
+    }
+  }
+  if (!Array.isArray(input.ingredients) || input.ingredients.length === 0) {
+    throw new Error("La receta necesita al menos un ingrediente o encabezado.");
+  }
+  if (!Array.isArray(input.steps) || input.steps.length === 0) {
+    throw new Error("La receta necesita al menos un paso o encabezado.");
+  }
+
+  if (!input.ingredients.some((item) => item?.type !== "group")) {
+    throw new Error("La receta necesita al menos un ingrediente normal además de sus encabezados.");
+  }
+  if (!input.steps.some((step) => step?.type !== "group")) {
+    throw new Error("La receta necesita al menos un paso normal además de sus encabezados.");
+  }
+
+  for (const [index, item] of input.ingredients.entries()) {
+    if (item?.type === "group") {
+      if (typeof item.title !== "string" || !item.title.trim() || item.title.trim().length > 240) {
+        throw new Error(`El encabezado de ingredientes ${index + 1} no es válido.`);
+      }
+      const candidate = item as unknown as Record<string, unknown>;
+      if (Object.keys(candidate).some((key) => key !== "type" && key !== "title")) {
+        throw new Error(`El encabezado de ingredientes ${index + 1} sólo puede tener título y tipo.`);
+      }
+      continue;
+    }
+    if (item?.type !== undefined && item.type !== "ingredient") {
+      throw new Error(`El tipo del ingrediente ${index + 1} no es válido.`);
+    }
+    if (typeof item?.name !== "string" || !item.name.trim()) {
+      throw new Error(`El ingrediente ${index + 1} no tiene nombre.`);
+    }
+    if (typeof item.unit !== "string" || !item.unit.trim() || item.unit.trim().length > 24) {
+      throw new Error(`La unidad del ingrediente ${index + 1} debe tener entre 1 y 24 caracteres.`);
+    }
+    if (item.quantity !== null && !Number.isFinite(item.quantity)) {
+      throw new Error(`La cantidad del ingrediente ${index + 1} no es válida.`);
+    }
+    if (item.note !== undefined && item.note !== null && item.note.length > 240) {
+      throw new Error(`La nota del ingrediente ${index + 1} no puede superar 240 caracteres.`);
+    }
+  }
+
+  for (const [index, step] of input.steps.entries()) {
+    if (step?.type === "group") {
+      if (typeof step.title !== "string" || !step.title.trim() || step.title.trim().length > 240) {
+        throw new Error(`El encabezado de pasos ${index + 1} no es válido.`);
+      }
+      const candidate = step as unknown as Record<string, unknown>;
+      if (Object.keys(candidate).some((key) => key !== "type" && key !== "title")) {
+        throw new Error(`El encabezado de pasos ${index + 1} sólo puede tener título y tipo.`);
+      }
+      continue;
+    }
+    if (step?.type !== undefined && step.type !== "step") {
+      throw new Error(`El tipo del paso ${index + 1} no es válido.`);
+    }
+    if (typeof step?.description !== "string" || !step.description.trim()) {
+      throw new Error(`El paso ${index + 1} no tiene descripción.`);
+    }
+    if (step.durationMinutes !== undefined && step.durationMinutes !== null &&
+        (!Number.isInteger(step.durationMinutes) || step.durationMinutes < 0)) {
+      throw new Error(`La duración del paso ${index + 1} no es válida.`);
+    }
+  }
+}
+
 /** Crea el ingrediente en el maestro si no existe y devuelve su identificador. */
 export async function ensureIngredient(
   name: string,
   unit: string,
   pantryCategory = "otros",
+  executor?: CatalogTransaction,
 ): Promise<number> {
-  const db = await getDb();
+  const db = executor ?? await getDb();
   if (!db) throw new Error("Base de datos no disponible");
 
   const slug = slugify(name);
@@ -133,8 +253,9 @@ export async function ensureIngredient(
 async function idBySlug(
   table: typeof categories | typeof dietTags | typeof collections,
   slug: string,
+  executor?: CatalogTransaction,
 ): Promise<number | null> {
-  const db = await getDb();
+  const db = executor ?? await getDb();
   if (!db) return null;
   const rows = await db
     .select({ id: table.id })
@@ -145,8 +266,8 @@ async function idBySlug(
 }
 
 /** Reemplaza por completo los ingredientes, pasos y relaciones de una receta. */
-async function writeRecipeRelations(recipeId: number, input: AdminRecipeInput): Promise<void> {
-  const db = await getDb();
+async function writeRecipeRelations(recipeId: number, input: AdminRecipeInput, executor?: CatalogTransaction): Promise<void> {
+  const db = executor ?? await getDb();
   if (!db) throw new Error("Base de datos no disponible");
 
   await db.delete(recipeIngredients).where(eq(recipeIngredients.recipeId, recipeId));
@@ -156,37 +277,67 @@ async function writeRecipeRelations(recipeId: number, input: AdminRecipeInput): 
 
   let order = 0;
   for (const item of input.ingredients) {
-    if (!item.name?.trim()) continue;
-    const ingredientId = await ensureIngredient(
-      item.name,
-      item.unit,
-      item.pantryCategory ?? "otros",
-    );
-    await db.insert(recipeIngredients).values({
-      recipeId,
-      ingredientId,
-      quantity: item.quantity === null ? null : String(item.quantity),
-      unit: item.unit,
-      note: item.note?.trim() || null,
-      sortOrder: order,
-    });
+    if (item.type === "group") {
+      await db.insert(recipeIngredients).values({
+        recipeId,
+        ingredientId: null,
+        type: "group",
+        groupTitle: item.title.trim(),
+        quantity: null,
+        unit: null,
+        note: null,
+        sortOrder: order,
+      });
+    } else {
+      const ingredientId = await ensureIngredient(
+        item.name,
+        item.unit,
+        item.pantryCategory ?? "otros",
+        executor,
+      );
+      await db.insert(recipeIngredients).values({
+        recipeId,
+        ingredientId,
+        type: "ingredient",
+        groupTitle: null,
+        quantity: item.quantity === null ? null : String(item.quantity),
+        unit: item.unit.trim(),
+        note: item.note?.trim() || null,
+        sortOrder: order,
+      });
+    }
     order += 1;
   }
 
   let stepNumber = 1;
-  for (const step of input.steps) {
-    if (!step.description?.trim()) continue;
-    await db.insert(recipeSteps).values({
-      recipeId,
-      stepNumber,
-      description: step.description.trim(),
-      durationMinutes: step.durationMinutes ?? null,
-    });
-    stepNumber += 1;
+  for (const [sortOrder, step] of input.steps.entries()) {
+    if (step.type === "group") {
+      await db.insert(recipeSteps).values({
+        recipeId,
+        type: "group",
+        groupTitle: step.title.trim(),
+        // `stepNumber` remains NOT NULL for old APK/database compatibility.
+        stepNumber: -(sortOrder + 1),
+        description: "",
+        durationMinutes: null,
+        sortOrder,
+      });
+    } else {
+      await db.insert(recipeSteps).values({
+        recipeId,
+        type: "step",
+        groupTitle: null,
+        stepNumber,
+        description: step.description.trim(),
+        durationMinutes: step.durationMinutes ?? null,
+        sortOrder,
+      });
+      stepNumber += 1;
+    }
   }
 
   for (const slug of input.dietTagSlugs ?? []) {
-    const dietTagId = await idBySlug(dietTags, slug);
+    const dietTagId = await idBySlug(dietTags, slug, executor);
     if (dietTagId) {
       await db.insert(recipeDietTags).values({ recipeId, dietTagId });
     }
@@ -194,7 +345,7 @@ async function writeRecipeRelations(recipeId: number, input: AdminRecipeInput): 
 
   let collectionOrder = 0;
   for (const slug of input.collectionSlugs ?? []) {
-    const collectionId = await idBySlug(collections, slug);
+    const collectionId = await idBySlug(collections, slug, executor);
     if (collectionId) {
       await db
         .insert(recipeCollections)
@@ -206,6 +357,7 @@ async function writeRecipeRelations(recipeId: number, input: AdminRecipeInput): 
 
 /** Crea una receta con todas sus relaciones. */
 export async function createRecipe(input: AdminRecipeInput): Promise<number> {
+  validateAdminRecipeInput(input);
   const db = await getDb();
   if (!db) throw new Error("Base de datos no disponible");
 
@@ -213,59 +365,8 @@ export async function createRecipe(input: AdminRecipeInput): Promise<number> {
   const categoryId = input.categorySlug ? await idBySlug(categories, input.categorySlug) : null;
   const status = input.status ?? "draft";
 
-  await db.insert(recipes).values({
-    slug,
-    title: input.title.trim(),
-    shortDescription: input.shortDescription?.trim() || null,
-    description: input.description?.trim() || null,
-    imageKey: input.imageKey || null,
-    thumbKey: input.thumbKey || null,
-    categoryId,
-    prepTime: input.prepTime,
-    cookingTime: input.cookingTime,
-    totalTime: input.prepTime + input.cookingTime,
-    difficulty: input.difficulty,
-    portions: input.portions,
-    nutrition: input.nutrition ?? null,
-    tips: input.tips?.trim() || null,
-    notes: input.notes?.trim() || null,
-    featured: input.featured ?? false,
-    status,
-    publishedAt: status === "published" ? new Date() : null,
-  });
-
-  const created = await db
-    .select({ id: recipes.id })
-    .from(recipes)
-    .where(eq(recipes.slug, slug))
-    .limit(1);
-  const recipeId = created[0].id;
-
-  await writeRecipeRelations(recipeId, input);
-  // La receta recién creada con foto necesita su fila de portada, para que la
-  // galería y las columnas espejo coincidan desde el primer guardado.
-  if (input.imageKey) await ensureCoverPhotoFromRecipe(recipeId);
-  await bumpCatalogVersion();
-  return recipeId;
-}
-
-/** Actualiza una receta existente e incrementa su versión. */
-export async function updateRecipe(id: number, input: AdminRecipeInput): Promise<void> {
-  const db = await getDb();
-  if (!db) throw new Error("Base de datos no disponible");
-
-  const current = await db.select().from(recipes).where(eq(recipes.id, id)).limit(1);
-  if (current.length === 0) throw new Error("La receta no existe");
-
-  const slug = input.slug?.trim()
-    ? await uniqueRecipeSlug(slugify(input.slug), id)
-    : current[0].slug;
-  const categoryId = input.categorySlug ? await idBySlug(categories, input.categorySlug) : null;
-  const status = input.status ?? current[0].status;
-
-  await db
-    .update(recipes)
-    .set({
+  const recipeId = await db.transaction(async (tx) => {
+    const inserted = await tx.insert(recipes).values({
       slug,
       title: input.title.trim(),
       shortDescription: input.shortDescription?.trim() || null,
@@ -280,16 +381,70 @@ export async function updateRecipe(id: number, input: AdminRecipeInput): Promise
       portions: input.portions,
       nutrition: input.nutrition ?? null,
       tips: input.tips?.trim() || null,
+      extraTips: input.extraTips?.trim() || null,
       notes: input.notes?.trim() || null,
-      featured: input.featured ?? current[0].featured,
+      featured: input.featured ?? false,
       status,
-      publishedAt:
-        status === "published" ? current[0].publishedAt ?? new Date() : current[0].publishedAt,
-      version: current[0].version + 1,
-    })
-    .where(eq(recipes.id, id));
+      publishedAt: status === "published" ? new Date() : null,
+    });
+    const recipeId = Number(inserted[0].insertId);
+    if (!Number.isInteger(recipeId) || recipeId <= 0) throw new Error("No se pudo obtener el ID de la receta.");
 
-  await writeRecipeRelations(id, input);
+    await writeRecipeRelations(recipeId, input, tx);
+    return recipeId;
+  });
+  // La receta recién creada con foto necesita su fila de portada, para que la
+  // galería y las columnas espejo coincidan desde el primer guardado.
+  if (input.imageKey) await ensureCoverPhotoFromRecipe(recipeId);
+  await bumpCatalogVersion();
+  return recipeId;
+}
+
+/** Actualiza una receta existente e incrementa su versión. */
+export async function updateRecipe(id: number, input: AdminRecipeInput): Promise<void> {
+  validateAdminRecipeInput(input);
+  const db = await getDb();
+  if (!db) throw new Error("Base de datos no disponible");
+
+  const current = await db.select().from(recipes).where(eq(recipes.id, id)).limit(1);
+  if (current.length === 0) throw new Error("La receta no existe");
+
+  const slug = input.slug?.trim()
+    ? await uniqueRecipeSlug(slugify(input.slug), id)
+    : current[0].slug;
+  const categoryId = input.categorySlug ? await idBySlug(categories, input.categorySlug) : null;
+  const status = input.status ?? current[0].status;
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(recipes)
+      .set({
+        slug,
+        title: input.title.trim(),
+        shortDescription: input.shortDescription?.trim() || null,
+        description: input.description?.trim() || null,
+        imageKey: input.imageKey || null,
+        thumbKey: input.thumbKey || null,
+        categoryId,
+        prepTime: input.prepTime,
+        cookingTime: input.cookingTime,
+        totalTime: input.prepTime + input.cookingTime,
+        difficulty: input.difficulty,
+        portions: input.portions,
+        nutrition: input.nutrition ?? null,
+        tips: input.tips?.trim() || null,
+        ...(input.extraTips === undefined ? {} : { extraTips: input.extraTips?.trim() || null }),
+        notes: input.notes?.trim() || null,
+        featured: input.featured ?? current[0].featured,
+        status,
+        publishedAt:
+          status === "published" ? current[0].publishedAt ?? new Date() : current[0].publishedAt,
+        version: current[0].version + 1,
+      })
+      .where(eq(recipes.id, id));
+
+    await writeRecipeRelations(id, input, tx);
+  });
   await bumpCatalogVersion();
 }
 
@@ -373,13 +528,15 @@ export async function getRecipeForEdit(id: number): Promise<(AdminRecipeInput & 
       .select({
         name: ingredients.name,
         pantryCategory: ingredients.pantryCategory,
+        type: recipeIngredients.type,
+        groupTitle: recipeIngredients.groupTitle,
         quantity: recipeIngredients.quantity,
         unit: recipeIngredients.unit,
         note: recipeIngredients.note,
         sortOrder: recipeIngredients.sortOrder,
       })
       .from(recipeIngredients)
-      .innerJoin(ingredients, eq(ingredients.id, recipeIngredients.ingredientId))
+      .leftJoin(ingredients, eq(ingredients.id, recipeIngredients.ingredientId))
       .where(eq(recipeIngredients.recipeId, id)),
     db.select().from(recipeSteps).where(eq(recipeSteps.recipeId, id)),
     db
@@ -420,24 +577,31 @@ export async function getRecipeForEdit(id: number): Promise<(AdminRecipeInput & 
     difficulty: row.difficulty,
     nutrition: nutrition ?? null,
     tips: row.tips ?? null,
+    extraTips: row.extraTips ?? null,
     notes: row.notes ?? null,
     featured: row.featured,
     status: row.status,
     ingredients: ingredientRows
       .sort((a, b) => a.sortOrder - b.sortOrder)
-      .map((item) => ({
-        name: item.name,
-        quantity: item.quantity === null ? null : Number(item.quantity),
-        unit: item.unit,
-        note: item.note ?? null,
-        pantryCategory: item.pantryCategory,
-      })),
+      .map((item) => item.type === "group"
+        ? { type: "group" as const, title: item.groupTitle ?? "" }
+        : {
+            type: "ingredient" as const,
+            name: item.name ?? "",
+            quantity: item.quantity === null ? null : Number(item.quantity),
+            unit: item.unit ?? "",
+            note: item.note ?? null,
+            pantryCategory: item.pantryCategory ?? "otros",
+          }),
     steps: stepRows
-      .sort((a, b) => a.stepNumber - b.stepNumber)
-      .map((item) => ({
-        description: item.description,
-        durationMinutes: item.durationMinutes ?? null,
-      })),
+      .sort((a, b) => (a.sortOrder ?? a.stepNumber) - (b.sortOrder ?? b.stepNumber))
+      .map((item) => item.type === "group"
+        ? { type: "group" as const, title: item.groupTitle ?? "" }
+        : {
+            type: "step" as const,
+            description: item.description,
+            durationMinutes: item.durationMinutes ?? null,
+          }),
   };
 }
 
@@ -505,54 +669,61 @@ export interface AdminCollectionInput {
   published?: boolean;
 }
 
-export async function upsertCollection(
-  input: AdminCollectionInput,
-  id?: number,
-): Promise<number> {
+type CatalogTransaction = Parameters<Parameters<NonNullable<Awaited<ReturnType<typeof getDb>>>["transaction"]>[0]>[0];
+
+/** Validación compartida: jamás persistir URLs temporales del navegador. */
+export function normalizeCollectionInput(input: AdminCollectionInput): AdminCollectionInput {
+  const name = input.name?.trim();
+  const slug = input.slug?.trim() || slugify(name ?? "");
+  if (!name || name.length > 180 || !slug || slug.length > 120) throw new Error("El nombre o identificador de la colección no es válido.");
+  if ((input.tagline?.length ?? 0) > 240 || (input.accentColor?.length ?? 0) > 16) throw new Error("La frase corta o el color supera el tamaño permitido.");
+  let imageKey = input.imageKey?.trim() || undefined;
+  if (imageKey) {
+    if (imageKey.length > 320 || /^(?:blob:|data:|file:|javascript:)/i.test(imageKey)) throw new Error("La portada debe ser una URL permanente o una clave del catálogo.");
+    if (/^https?:/i.test(imageKey)) {
+      try { const url = new URL(imageKey); if (!url.hostname || !["http:", "https:"].includes(url.protocol)) throw new Error(); }
+      catch { throw new Error("La URL de portada no es válida."); }
+    } else if (/[\s\\]/.test(imageKey) || imageKey.includes(":") || imageKey.includes("..")) throw new Error("La clave de portada no es válida.");
+  }
+  return { ...input, name, slug, imageKey };
+}
+
+/** Se reutiliza para guardado normal y adjuntar portada dentro de la misma transacción. */
+export async function persistCollection(tx: CatalogTransaction, input: AdminCollectionInput, id?: number): Promise<number> {
+  let savedId: number;
+  if (id) {
+    const [current] = await tx.select().from(collections).where(eq(collections.id, id)).limit(1).for("update");
+    if (!current) throw new Error("La colección no existe.");
+    await tx.update(collections).set({
+      slug: input.slug!, name: input.name,
+      tagline: input.tagline?.trim() || null, description: input.description?.trim() || null,
+      imageKey: input.imageKey || current.imageKey,
+      accentColor: input.accentColor === undefined ? current.accentColor : input.accentColor || null,
+      sortOrder: input.sortOrder ?? current.sortOrder, published: input.published ?? current.published,
+      version: current.version + 1, updatedAt: new Date(),
+    }).where(eq(collections.id, id));
+    savedId = id;
+  } else {
+    const duplicate = await tx.select({ id: collections.id }).from(collections).where(eq(collections.slug, input.slug!)).limit(1);
+    if (duplicate.length) throw new Error("Ya existe una colección con ese nombre o identificador.");
+    const result = await tx.insert(collections).values({
+      slug: input.slug!, name: input.name, tagline: input.tagline?.trim() || null,
+      description: input.description?.trim() || null, imageKey: input.imageKey || null,
+      accentColor: input.accentColor || null, sortOrder: input.sortOrder ?? 0, published: input.published ?? true,
+    });
+    savedId = Number(result[0].insertId);
+  }
+  const count = await tx.select({ total: sql<number>`count(*)` }).from(recipes).where(eq(recipes.status, "published"));
+  await tx.insert(catalogState).values({ id: 1, catalogVersion: 1, publishedRecipes: Number(count[0]?.total ?? 0), lastChangeAt: new Date() })
+    .onDuplicateKeyUpdate({ set: { catalogVersion: sql`${catalogState.catalogVersion} + 1`, lastChangeAt: new Date() } });
+  return savedId;
+}
+
+export async function upsertCollection(input: AdminCollectionInput, id?: number): Promise<number> {
+  const normalized = normalizeCollectionInput(input);
   const db = await getDb();
   if (!db) throw new Error("Base de datos no disponible");
-
-  const slug = input.slug?.trim() || slugify(input.name);
-
-  if (id) {
-    const current = await db.select().from(collections).where(eq(collections.id, id)).limit(1);
-    if (current.length === 0) throw new Error("La colección no existe");
-    await db
-      .update(collections)
-      .set({
-        slug,
-        name: input.name.trim(),
-        tagline: input.tagline?.trim() || null,
-        description: input.description?.trim() || null,
-        imageKey: input.imageKey || null,
-        accentColor: input.accentColor || null,
-        sortOrder: input.sortOrder ?? current[0].sortOrder,
-        published: input.published ?? current[0].published,
-        version: current[0].version + 1,
-      })
-      .where(eq(collections.id, id));
-    await bumpCatalogVersion();
-    return id;
-  }
-
-  await db.insert(collections).values({
-    slug,
-    name: input.name.trim(),
-    tagline: input.tagline?.trim() || null,
-    description: input.description?.trim() || null,
-    imageKey: input.imageKey || null,
-    accentColor: input.accentColor || null,
-    sortOrder: input.sortOrder ?? 0,
-    published: input.published ?? true,
-  });
-
-  const created = await db
-    .select({ id: collections.id })
-    .from(collections)
-    .where(eq(collections.slug, slug))
-    .limit(1);
-  await bumpCatalogVersion();
-  return created[0].id;
+  return db.transaction((tx) => persistCollection(tx, normalized, id));
 }
 
 export async function deleteCollection(id: number): Promise<void> {

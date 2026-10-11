@@ -6,6 +6,8 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { registerStorageProxy } from "./storageProxy";
 import { registerAdminRoutes } from "../admin-routes";
+import { registerShopifyWebhookRoutes } from "../shopify-webhook";
+import { registerShopifyReconciliationRoutes } from "../shopify-reconciliation-routes";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 
@@ -53,9 +55,14 @@ async function startServer() {
     next();
   });
 
+  // Shopify exige verificar la firma sobre el cuerpo crudo. Esta ruta se registra
+  // antes del parser JSON general para conservar exactamente los bytes recibidos.
+  registerShopifyWebhookRoutes(app);
+
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+  registerShopifyReconciliationRoutes(app);
   registerStorageProxy(app);
   registerOAuthRoutes(app);
   registerAdminRoutes(app);

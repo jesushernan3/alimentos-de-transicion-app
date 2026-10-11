@@ -18,6 +18,8 @@ import { api } from "./api-client";
 import { getConnectivity } from "./connectivity";
 import { prefetchInBackground } from "./image-cache";
 import { applyChanges, countRecipes, getSyncState } from "./local-db/catalog-store";
+import { getInstallationDeviceMetadata } from "./installation-device";
+import { reportAccessRejection, isDeviceRevoked, DEVICE_REVOKED_FEEDBACK } from "./device-revocation";
 
 export type SyncPhase =
   | "idle"
@@ -121,7 +123,7 @@ async function performSync(
     }
 
     const state = await getSyncState();
-    const since = force ? null : state.lastSyncAt;
+    const since = force || state.recipeFormatVersion !== 2 ? null : state.lastSyncAt;
 
     report(
       "downloading",
@@ -129,10 +131,12 @@ async function performSync(
       null,
     );
 
-    const response = await api.sync.pull.query({ token, since: since ?? null });
+    const device = await getInstallationDeviceMetadata();
+    const response = await api.sync.pull.query({ token, since: since ?? null, recipeFormatVersion: 2, ...device });
 
     if (!response.authorized || !response.data) {
-      return failure("El acceso no está habilitado", true);
+      reportAccessRejection(token, response);
+      return failure(isDeviceRevoked(response) ? DEVICE_REVOKED_FEEDBACK.message : "El acceso no está habilitado", true);
     }
 
     const data = response.data;
@@ -149,6 +153,7 @@ async function performSync(
       deletions: data.deletions,
       catalogVersion: data.catalogVersion,
       serverTime: data.serverTime,
+      recipeFormatVersion: data.recipeFormatVersion ?? 1,
     });
 
     // Las imágenes se descargan después de guardar el texto: si la conexión se
@@ -224,6 +229,10 @@ async function performSync(
       missingImages: 0,
     };
   } catch (error) {
+    if (isDeviceRevoked(error)) {
+      reportAccessRejection(token, error);
+      return failure(DEVICE_REVOKED_FEEDBACK.message, true);
+    }
     const message =
       error instanceof Error && /fetch|network|timeout/i.test(error.message)
         ? "No pudimos conectarnos al servidor"
@@ -246,7 +255,7 @@ export async function hasRemoteUpdates(): Promise<{ available: boolean; newRecip
     const localRecipes = await countRecipes();
 
     return {
-      available: remote.catalogVersion > local.catalogVersion,
+      available: (remote.recipeFormatVersion === 2 && local.recipeFormatVersion !== 2) || remote.catalogVersion > local.catalogVersion,
       newRecipes: Math.max(0, remote.publishedRecipes - localRecipes),
     };
   } catch {

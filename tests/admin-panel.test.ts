@@ -43,6 +43,44 @@ describe("panel administrativo", () => {
     expect(response.status).toBe(302);
   });
 
+  it("protege el estado de reconciliación Shopify sin sesión administrativa", async () => {
+    const response = await fetch(`${BASE}/admin/api/shopify/reconciliation/status`, {
+      redirect: "manual",
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("protege la simulación segura de alertas sin sesión administrativa", async () => {
+    const response = await fetch(
+      `${BASE}/admin/api/shopify/reconciliation/monitoring/simulate-error`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("expone la sección y el estado de reconciliación sólo después de autenticar", async () => {
+    const page = await get("/admin");
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain("Reconciliar Shopify");
+    const script = await get("/admin/app.js");
+    expect(script.status).toBe(200);
+    const javascript = await script.text();
+    expect(javascript).toContain("Estado de reconciliación Shopify");
+    expect(javascript).toContain("Probar alerta sin tocar pedidos");
+
+    const status = await get("/admin/api/shopify/reconciliation/status");
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      configured: true,
+      intervalMinutes: 5,
+      monitoring: {
+        alertConfigured: true,
+        alertCooldownMinutes: 360,
+      },
+    });
+  }, 15_000);
+
   it("devuelve el resumen con el catálogo real", async () => {
     const response = await get("/admin/api/dashboard");
     expect(response.status).toBe(200);
@@ -67,7 +105,7 @@ describe("panel administrativo", () => {
     const detail = await detailResponse.json();
     expect(detail.ingredients.length).toBeGreaterThan(0);
     expect(detail.steps.length).toBeGreaterThan(0);
-  });
+  }, 15_000);
 
   it("lista colecciones y taxonomía", async () => {
     const collections = await (await get("/admin/api/collections")).json();

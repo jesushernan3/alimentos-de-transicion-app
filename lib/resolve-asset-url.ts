@@ -63,11 +63,13 @@ function serverBaseUrl(): string {
  * futuro el catálogo pasa a guardar direcciones completas (por ejemplo de una
  * red de distribución de contenido) nada deja de funcionar.
  */
-export function resolveAssetUrl(value: string | null | undefined): string | null {
-  if (!value) return null;
+export function normalizeImageUrl(value: string | null | undefined): string | null {
+  return value?.trim() || null;
+}
 
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return null;
+export function resolveAssetUrl(value: string | null | undefined): string | null {
+  const trimmed = normalizeImageUrl(value);
+  if (!trimmed) return null;
 
   // Ya es absoluta: no hay nada que resolver.
   if (/^https?:\/\//i.test(trimmed)) return trimmed;

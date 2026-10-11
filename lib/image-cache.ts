@@ -154,10 +154,25 @@ export async function getCachedImage(remoteUrl: string | null): Promise<string |
   if (absolute.startsWith("file://")) return absolute;
 
   const cached = memoryIndex.get(absolute);
-  if (cached) return cached;
+  if (cached) {
+    if (await localFileIsUsable(cached)) return cached;
+    memoryIndex.delete(absolute);
+  }
 
   const local = await downloadToCache(absolute);
   return local ?? absolute;
+}
+
+/** Descarta sólo el archivo propio que expo-image no pudo decodificar. */
+export async function discardCorruptCachedImage(remoteUrl: string, localPath: string): Promise<void> {
+  const absolute = resolveAssetUrl(remoteUrl);
+  if (isWeb || !absolute || localPath !== `${cacheDirectory()}${fileNameFor(absolute)}`) return;
+  memoryIndex.delete(absolute);
+  try {
+    await FileSystem.deleteAsync(localPath, { idempotent: true });
+  } catch {
+    // La carga remota sigue siendo posible aunque el archivo ya no exista.
+  }
 }
 
 export interface PrefetchResult {
@@ -315,7 +330,9 @@ export async function countMissingImages(urls: (string | null)[]): Promise<numbe
 
   let missing = 0;
   for (const url of unique) {
-    if (memoryIndex.has(url)) continue;
+    const indexed = memoryIndex.get(url);
+    if (indexed && (await localFileIsUsable(indexed))) continue;
+    if (indexed) memoryIndex.delete(url);
     const usable = await localFileIsUsable(`${dir}${fileNameFor(url)}`);
     if (usable) {
       memoryIndex.set(url, `${dir}${fileNameFor(url)}`);

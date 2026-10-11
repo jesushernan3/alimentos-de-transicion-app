@@ -17,7 +17,14 @@ export interface SyncNutrition {
   fiber: number;
 }
 
-export interface SyncRecipeIngredient {
+export interface SyncRecipeGroup {
+  type: "group";
+  title: string;
+  sortOrder: number;
+}
+
+export interface SyncRecipeIngredientItem {
+  type?: "ingredient";
   ingredientSlug: string;
   /** Cantidad para las porciones base; `null` significa «a gusto». */
   quantity: number | null;
@@ -26,11 +33,17 @@ export interface SyncRecipeIngredient {
   sortOrder: number;
 }
 
-export interface SyncRecipeStep {
+export type SyncRecipeIngredient = SyncRecipeIngredientItem | SyncRecipeGroup;
+
+export interface SyncRecipeStepItem {
+  type?: "step";
+  sortOrder?: number;
   stepNumber: number;
   description: string;
   durationMinutes: number | null;
 }
+
+export type SyncRecipeStep = SyncRecipeStepItem | SyncRecipeGroup;
 
 /**
  * Foto de una receta.
@@ -81,6 +94,7 @@ export interface SyncRecipe {
   portions: number;
   nutrition: SyncNutrition | null;
   tips: string | null;
+  extraTips?: string | null;
   featured: boolean;
   communitySaves: number;
   ingredients: SyncRecipeIngredient[];
@@ -147,6 +161,8 @@ export interface SyncDeletion {
 export interface SyncPullResult {
   serverTime: string;
   catalogVersion: number;
+  /** Ausente en servidores anteriores; sólo 2 confirma soporte de encabezados. */
+  recipeFormatVersion?: number;
   full: boolean;
   recipes: SyncRecipe[];
   ingredients: SyncIngredient[];
@@ -165,9 +181,18 @@ export interface SyncStateResult {
   publishedRecipes: number;
   lastChangeAt: string;
   serverTime: string;
+  /** Capacidad del backend; ausente en versiones anteriores. */
+  recipeFormatVersion?: number;
 }
 
 export type LicenseStatus = "active" | "pending" | "revoked" | "refunded";
+
+export type AccessRejectionReason =
+  | "device-limit"
+  | "device-revoked"
+  | "device-reactivated"
+  | "device-released"
+  | "device-required";
 
 /** Resultado de una verificación de acceso. */
 export interface AccessResult {
@@ -178,4 +203,7 @@ export interface AccessResult {
   token?: string;
   expiresAt: string | null;
   checkedAt: string;
+  reason?: AccessRejectionReason | null;
+  /** Sólo consulta revocación/reactivación; nunca autoriza catálogo o sesión. */
+  deviceStatusProof?: string;
 }

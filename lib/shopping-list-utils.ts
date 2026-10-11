@@ -1,3 +1,4 @@
+import { ingredientItems } from "./recipe-entries";
 import type { Ingredient, Recipe } from "@/data/types";
 
 import { scaleQuantity } from "./recipe-utils";
@@ -14,7 +15,7 @@ export function recipeToShoppingDrafts(
   ingredientsById: Map<string, Ingredient>,
   targetPortions: number = recipe.portions,
 ): ShoppingDraft[] {
-  return recipe.ingredients.map((item) => {
+  return ingredientItems(recipe.ingredients).map((item) => {
     const ingredient = ingredientsById.get(item.ingredientId);
     const quantity =
       item.unit === "a-gusto"

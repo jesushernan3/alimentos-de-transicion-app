@@ -1,3 +1,4 @@
+import { ingredientItems } from "../lib/recipe-entries";
 import { describe, expect, it } from "vitest";
 
 import { BUNDLED_CATALOG } from "../data/catalog";
@@ -23,7 +24,7 @@ describe("recipeToShoppingDrafts", () => {
 
   it("escala las cantidades según las porciones pedidas", () => {
     const recipe = BUNDLED_CATALOG.recipes.find((item) =>
-      item.ingredients.some((ing) => ing.unit === "g" && ing.quantity !== null),
+      ingredientItems(item.ingredients).some((ing) => ing.unit === "g" && ing.quantity !== null),
     );
     expect(recipe).toBeDefined();
     if (!recipe) return;

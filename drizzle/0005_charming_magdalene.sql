@@ -1,0 +1,1 @@
+ALTER TABLE `licenses` ADD CONSTRAINT `licenses_email_product_unique` UNIQUE(`email`,`productId`);

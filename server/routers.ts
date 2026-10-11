@@ -27,6 +27,17 @@ const emailSchema = z
   .max(320)
   .email("Ingresá un correo válido");
 
+const deviceFields = {
+  deviceId: z.string().trim().min(16).max(128).optional(),
+  deviceLabel: z.string().trim().max(160).optional(),
+  platform: z.string().trim().max(32).optional(),
+  appVersion: z.string().trim().max(32).optional(),
+  manufacturer: z.string().trim().max(120).optional(),
+  modelName: z.string().trim().max(160).optional(),
+  modelId: z.string().trim().max(120).optional(),
+  osVersion: z.string().trim().max(64).optional(),
+};
+
 export const appRouter = router({
   system: systemRouter,
 
@@ -45,7 +56,9 @@ export const appRouter = router({
       .input(z.object({ email: emailSchema }))
       .mutation(async ({ input, ctx }) => {
         const ip =
-          (ctx.req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
+          (ctx.req.headers["x-forwarded-for"] as string | undefined)
+            ?.split(",")[0]
+            ?.trim() ??
           ctx.req.socket?.remoteAddress ??
           undefined;
         return requestAccessCode(input.email, ip);
@@ -56,26 +69,41 @@ export const appRouter = router({
         z.object({
           email: emailSchema,
           code: z.string().trim().min(4).max(8),
-          deviceLabel: z.string().trim().max(160).optional(),
-          platform: z.string().trim().max(32).optional(),
+          ...deviceFields,
         }),
       )
       .mutation(async ({ input }) => {
         const outcome = await verifyAccessCode(input.email, input.code, {
+          deviceId: input.deviceId ?? "",
           label: input.deviceLabel,
           platform: input.platform,
+          appVersion: input.appVersion,
+                manufacturer: input.manufacturer, modelName: input.modelName, modelId: input.modelId, osVersion: input.osVersion,
         });
         return { ...outcome.result, reason: outcome.reason ?? null };
       }),
 
     status: publicProcedure
-      .input(z.object({ token: z.string().min(16) }))
-      .query(async ({ input }) => checkAccessStatus(input.token)),
+      .input(z.object({ token: z.string().min(16), ...deviceFields }))
+      .query(async ({ input }) =>
+        checkAccessStatus(
+          input.token,
+          input.deviceId
+            ? {
+                deviceId: input.deviceId,
+                label: input.deviceLabel,
+                platform: input.platform,
+                appVersion: input.appVersion,
+                manufacturer: input.manufacturer, modelName: input.modelName, modelId: input.modelId, osVersion: input.osVersion,
+              }
+            : undefined,
+        ),
+      ),
 
     signOut: publicProcedure
-      .input(z.object({ token: z.string().min(16) }))
+      .input(z.object({ token: z.string().min(16), deviceId: deviceFields.deviceId }))
       .mutation(async ({ input }) => {
-        await revokeSession(input.token);
+        await revokeSession(input.token, input.deviceId);
         return { success: true } as const;
       }),
   }),
@@ -101,14 +129,28 @@ export const appRouter = router({
         z.object({
           token: z.string().min(16),
           since: z.string().datetime().nullable().optional(),
+          recipeFormatVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+          ...deviceFields,
         }),
       )
       .query(async ({ input }) => {
-        const access = await checkAccessStatus(input.token);
+        const access = await checkAccessStatus(
+          input.token,
+          input.deviceId
+            ? {
+                deviceId: input.deviceId,
+                label: input.deviceLabel,
+                platform: input.platform,
+                appVersion: input.appVersion,
+                manufacturer: input.manufacturer, modelName: input.modelName, modelId: input.modelId, osVersion: input.osVersion,
+              }
+            : undefined,
+        );
         if (!access.authorized) {
           return {
             authorized: false as const,
             status: access.status,
+            reason: access.reason ?? null,
             data: null,
           };
         }
@@ -116,6 +158,7 @@ export const appRouter = router({
         const since = input.since ? new Date(input.since) : null;
         const data = await pullCatalogChanges(
           since && Number.isFinite(since.getTime()) ? since : null,
+          input.recipeFormatVersion ?? 1,
         );
         return { authorized: true as const, status: access.status, data };
       }),

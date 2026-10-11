@@ -7,12 +7,12 @@
  */
 
 import "dotenv/config";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 
 import { CSV_COLUMNS, CSV_TEMPLATE, applyImport, exportCsv, parseCsv, validateCsv } from "../server/csv-import";
 import { getDb } from "../server/db";
-import { recipes } from "../drizzle/schema";
+import { recipes, recipeIngredients, recipeSteps, recipeDietTags, recipeCollections, recipePhotos } from "../drizzle/schema";
 
 const HEADER = CSV_COLUMNS.join(",");
 
@@ -130,6 +130,22 @@ describe("validación previa", () => {
 describe("importación y exportación", () => {
   const SLUG = `receta-importada-${Date.now()}`;
 
+  async function cleanFixture() {
+    const db = await getDb();
+    if (!db) return;
+    const rows = await db.select({ id: recipes.id }).from(recipes).where(eq(recipes.slug, SLUG));
+    for (const row of rows) {
+      await db.transaction(async (tx) => {
+        for (const table of [recipeIngredients, recipeSteps, recipeDietTags, recipeCollections, recipePhotos]) {
+          await tx.delete(table).where(eq(table.recipeId, row.id));
+        }
+        await tx.delete(recipes).where(eq(recipes.id, row.id));
+      });
+    }
+  }
+
+  afterAll(cleanFixture, 60_000);
+
   it("crea la receta y luego la actualiza sin duplicar", async () => {
     const db = await getDb();
     if (!db) return;
@@ -172,7 +188,7 @@ describe("importación y exportación", () => {
     const db = await getDb();
     if (!db) return;
 
-    await db.delete(recipes).where(eq(recipes.slug, SLUG));
+    await cleanFixture();
     const rows = await db.select().from(recipes).where(eq(recipes.slug, SLUG));
     expect(rows.length).toBe(0);
   }, 30000);
