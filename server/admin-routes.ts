@@ -10,7 +10,9 @@
 
 import type { Express, Request, Response } from "express";
 
+import { BulkInputError, executeAdminBulk, listAdminBulkOperations, type BulkEntity } from "./admin-bulk";
 import {
+  adminAuditActor,
   checkPassword,
   endAdminSession,
   isAdminConfigured,
@@ -153,6 +155,20 @@ export function registerAdminRoutes(app: Express): void {
   );
 
   // --- Recetas -------------------------------------------------------------
+
+  const bulkAction = (entity: BulkEntity) => handle(async (req) => {
+    try { return await executeAdminBulk(entity, req.body, adminAuditActor(req)); }
+    catch (error) {
+      if (error instanceof BulkInputError) throw error;
+      throw new Error("No se pudo confirmar el lote. Reintentá la misma operación para consultar su resultado.");
+    }
+  });
+  app.post("/admin/api/recipes/bulk", bulkAction("recipes"));
+  app.post("/admin/api/licenses/bulk-action", bulkAction("licenses"));
+  app.get("/admin/api/bulk-operations", handle(async () => {
+    try { return await listAdminBulkOperations(); }
+    catch { throw new Error("No se pudo consultar el historial de operaciones."); }
+  }));
 
   app.get(
     "/admin/api/recipes",
@@ -369,9 +385,11 @@ export function registerAdminRoutes(app: Express): void {
 
   app.get(
     "/admin/api/users",
-    handle(async (req) =>
-      listUsersWithLicenses(req.query.search ? String(req.query.search) : undefined),
-    ),
+    handle(async (req) => {
+      const archived = String(req.query.archived ?? "active");
+      if (!["active", "archived", "all"].includes(archived)) throw new Error("Filtro de archivados inválido.");
+      return listUsersWithLicenses(req.query.search ? String(req.query.search) : undefined, archived as "active" | "archived" | "all");
+    }),
   );
 
   app.get(

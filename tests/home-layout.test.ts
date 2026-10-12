@@ -93,9 +93,10 @@ describe("orden de las secciones", () => {
     expect(etiquetas).toEqual(["Favoritos", "Mi semana", "¿Qué cocino?"]);
   });
 
-  it("el resto conserva un orden lógico", () => {
-    expect(posicion("Recetas recomendadas")).toBeLessThan(posicion("Explorar por categorías"));
-    expect(posicion("Explorar por categorías")).toBeLessThan(
+  it("categorías sigue inmediatamente a colecciones y luego vienen recomendadas", () => {
+    const titulos = [...HOME.matchAll(/\btitle="([^"]+)"/g)].map((m) => m[1]);
+    expect(titulos.slice(0, 3)).toEqual(["Tus colecciones", "Explorar por categorías", "Recetas recomendadas"]);
+    expect(posicion("Recetas recomendadas")).toBeLessThan(
       posicion("Listas en menos de 30 minutos"),
     );
   });

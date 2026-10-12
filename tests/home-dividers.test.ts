@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const source = fs.readFileSync(path.resolve("app/(tabs)/index.tsx"), "utf8");
 const file = ts.createSourceFile("home.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const titles = ["Tus colecciones", "Recetas recomendadas", "Explorar por categorías", "Listas en menos de 30 minutos", "Favoritas de la comunidad"];
+const titles = ["Tus colecciones", "Explorar por categorías", "Recetas recomendadas", "Listas en menos de 30 minutos", "Favoritas de la comunidad"];
 function nodesMatching(predicate: (node: ts.Node) => boolean): ts.Node[] {
   const result: ts.Node[] = [];
   const visit = (node: ts.Node) => { if (predicate(node)) result.push(node); ts.forEachChild(node, visit); };

@@ -590,8 +590,67 @@ Validación final: 477 pruebas / 49 suites, 15 escenarios E2E, TypeScript/build/
 - [x] Onboarding automático tras carga del usuario preservando replay y enforcement
 - [x] Planificador completo contextual desde receta con retorno natural y tabs intactos
 - [x] TypeScript, build, verificar:proyecto y regresiones relacionadas
-- [x] Guardar checkpoint y actualizar commit local de main sin push ni APK/AAB
+- [ ] Guardar checkpoint y actualizar commit local de main sin push ni APK/AAB
 
-## Estado de sincronización GitHub corregida
+## APK de prueba del checkpoint corregido 1cb6cc64
 
-Checkpoint fuente: 1cb6cc64. Código runtime y configuración idénticos al WebDev; referencias privadas sanitizadas sólo en documentación y fixtures. TypeScript/build/verificar aprobados en la copia; 39 suites herméticas y 408 pruebas pasan. Checkout WebDev: 51 suites y 490 pruebas pasan. Commit de integración local actualizado; push pendiente de resolver la autorización de escritura que rechazó el envío anterior. No APK/AAB.
+- [x] Verificar identidad Expo, perfil preview, firma existente y exclusiones de secretos
+- [x] Ejecutar verificar:proyecto, TypeScript, build y pruebas relacionadas
+- [x] Guardar checkpoint previo y construir sólo APK preview con credenciales congeladas
+- [x] Descargar e inspeccionar APK, package, versión/code, certificado, backend y contenido acumulado
+- [x] Documentar evidencia y entregar APK/link de instalación sin AAB ni publicación Play
+
+Nueva APK FINISHED 1e107ac6-a58b-498f-a0d3-b279996390c0 del commit GitHub 22c5cf623ded7f4b4ac646cc9c32d1eee7ff36f1. 51 suites/490 pruebas pasan; identidad 1.0.3/4 y package comprobados en APK. Firma FKglJ9qGMb idéntica a certificado anterior, backend producción presente, diez marcadores cliente detectados, secretos ausentes. Archivo nuevo verificado 51597819 bytes, distinto de APK anterior. Sin AAB/submit, cambios funcionales ni nuevas credenciales. Pruebas físicas pendientes.
+
+## Teclado en acceso email/OTP — 12/10/2026
+
+- [x] Identificar pantalla y comunicar diagnóstico antes de modificar código.
+- [x] Ajustar KAV/ScrollView sólo en acceso, sin offset manual ni alturas fijas nuevas; conservar Safe Area/diseño/callbacks.
+- [x] Agregar pruebas montadas del layout para Android/iOS/web y flujo email/OTP/ayuda, sin peticiones reales.
+- [x] Ejecutar TypeScript, build, verificar:proyecto y regresiones cliente/onboarding/navegación/enforcement.
+- [x] Confirmar diff sin backend/sesiones/OTP/configuración/estilos globales, documentar límites/checklist nativo y guardar checkpoint; no APK/AAB.
+
+Resultado: TypeScript/build/verificar:proyecto aprobados; 15 suites/170 pruebas pasando, incluidas 11 nuevas con KeyboardAvoidingView oficial y eventos/layout simulados. No APK/AAB ni cambios backend, OTP, sesiones, configuración o estilos globales. Prueba con teclado real en Android pequeño/portrait pendiente y checklist en ACCESO-TECLADO.md.
+
+## Selección y acciones masivas administrativas
+
+- [x] Inspeccionar estados/borrado/archivado y comunicar decisiones antes de implementar
+- [x] UI de selección visible, contador, barra bulk, modales de confirmación y estados busy
+- [x] Endpoints protegidos, servicios transaccionales/idempotentes y auditoría
+- [x] archivedAt aditivo con filtro y restauración sin alterar autorización/historial
+- [x] Generar/inspeccionar/aplicar migración aditiva y verificar integridad
+- [x] Probar selección, estados, borrado, revocación/sesiones, archivado/restauración, replays y rollback
+- [x] Validar UI real con fixtures aislados y limpiar sólo sus datos
+- [x] TypeScript/build/verificar:proyecto y regresiones; checkpoint/informe sin APK/AAB
+
+Resultado: TypeScript/build/verificar:proyecto aprobados; 44 suites y 445 pruebas pasando; 21 comprobaciones E2E del panel real aprobadas. Migración 0015 aplicada/registrada una vez; tabla adminBulkOperations y licenses.archivedAt presentes. Conteos de negocio iguales al baseline tras limpiar fixtures propios, contador publicado 367 igual al SQL. App móvil/Shopify/mailer/configuración sin cambios, no APK/AAB ni push GitHub. Validación del dominio publicado pendiente de publicar el checkpoint. Informe: ACCIONES-MASIVAS-BACKOFFICE.md.
+
+## Orden de Home: categorías después de colecciones
+
+- [x] Revisar bloques actuales y pruebas del orden/separadores.
+- [x] Mover categorías entre colecciones y recomendadas conservando JSX, estilos y callbacks.
+- [x] Actualizar pruebas de orden y confirmar separadores sin duplicación ni divisor al inicio/final.
+- [x] Ejecutar TypeScript, build, verificar:proyecto y pruebas relacionadas; comprobar diff acotado.
+- [x] Guardar checkpoint del proyecto existente, sin APK/AAB ni cambios backend/base.
+
+Resultado: Home ahora presenta Tus colecciones → Explorar por categorías → Recetas recomendadas; los bloques, callbacks y estilos permanecen idénticos y hay cuatro divisores entre secciones, ninguno al inicio/final. TypeScript/build/verificar:proyecto aprobados; 4 suites/42 pruebas pasando. Diff limitado a Home, dos pruebas de estructura y registros plan/TODO. Sin cambios backend/base, APK/AAB ni push GitHub.
+
+## Correo de ayuda actualizado
+
+- [x] Identificar constante compartida por texto y enlace mailto.
+- [x] Actualizar correo, expectativas de pruebas y verificador.
+- [x] Ejecutar tipos/build/verificador y pruebas de soporte.
+- [x] Guardar checkpoint sin cambios de autenticación ni APK/AAB.
+
+Resultado: correo visible y mailto actualizados a soporte@alimentosdetransicion.com; asunto/cuerpo, FAQ y navegación intactos. TypeScript/build/verificar:proyecto aprobados, 34 pruebas pasando en 2 suites. Sin emails enviados, cambios backend/base ni APK/AAB.
+
+## Push main y APK preview actualizada — 12/10/2026
+
+- [x] Verificar repo/HEAD remoto y sesión Expo existentes.
+- [x] Integrar snapshot actual sanitizado preservando .gitignore remoto.
+- [x] Validar TypeScript/build/verificador y regresiones sobre copia de main.
+- [ ] Hacer commit y push normal; comprobar hash remoto.
+- [ ] Compilar APK preview con credenciales congeladas y caché limpia.
+- [ ] Verificar APK, firma idéntica, versión y backend; entregar enlace.
+
+Pre-push: TypeScript/build/verificar:proyecto aprobados; 42 suites herméticas/443 pruebas pasando. Runtime idéntico a WebDev f8fe81d8; .gitignore remoto conservado y copia pública sanitizada.

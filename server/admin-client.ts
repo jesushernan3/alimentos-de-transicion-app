@@ -18,6 +18,7 @@ const modal = document.getElementById('modal');
 const toastEl = document.getElementById('toast');
 
 let toastTimer = null;
+let modalDismiss = null;
 function toast(message, isError) {
   toastEl.textContent = message;
   toastEl.className = 'toast show' + (isError ? ' error' : '');
@@ -45,8 +46,14 @@ async function api(path, options) {
   return data;
 }
 
-function openModal(html) { modal.innerHTML = html; backdrop.classList.add('open'); }
-function closeModal() { backdrop.classList.remove('open'); modal.innerHTML = ''; }
+function openModal(html) { modalDismiss = null; modal.innerHTML = html; backdrop.classList.add('open'); }
+function closeModal() {
+  const dismiss = modalDismiss;
+  modalDismiss = null;
+  backdrop.classList.remove('open');
+  modal.innerHTML = '';
+  if (dismiss) dismiss();
+}
 backdrop.addEventListener('click', (event) => { if (event.target === backdrop) closeModal(); });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeModal(); });
 
@@ -94,9 +101,11 @@ async function getCollections() {
 
 // --- Vista: resumen --------------------------------------------------------
 
-async function viewDashboard() {
+async function viewDashboard(viewToken) {
+  const currentViewToken = viewToken ?? ++adminNavigationToken;
   main.innerHTML = '<div class="empty">Cargando…</div>';
   const data = await api('/dashboard');
+  if (currentViewToken !== adminNavigationToken) return;
   const c = data.catalog || {};
   const l = data.licenses || {};
 
@@ -129,10 +138,232 @@ function stat(value, label) {
 // --- Vista: recetas --------------------------------------------------------
 
 let recipeFilters = { search: '', status: '', collection: '' };
+let userFilters = { search: '', archived: 'active' };
+const recipeSelection = new Set();
+const licenseSelection = new Set();
+const bulkOperations = { recipes: null, licenses: null };
+let recipeBulkBusy = false;
+let licenseBulkBusy = false;
+let recipeViewToken = 0;
+let userViewToken = 0;
+let recipeRequestToken = 0;
+let userRequestToken = 0;
+let adminNavigationToken = 0;
+let recipeBulkResult = null;
+let licenseBulkResult = null;
+let visibleRecipeRows = [];
+let visibleLicenseUsers = [];
 
-async function viewRecipes() {
+function newOperationId() {
+  if (typeof globalThis !== 'undefined' && globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (character) => {
+    const random = Math.random() * 16 | 0;
+    const value = character === 'x' ? random : (random & 3 | 8);
+    return value.toString(16);
+  });
+}
+
+function sameIds(left, right) {
+  return left.length === right.length && left.every((value, index) => Number(value) === Number(right[index]));
+}
+
+function getBulkOperation(kind, action, ids, confirmation) {
+  const previous = bulkOperations[kind];
+  if (previous && previous.action === action && previous.confirmation === confirmation && sameIds(previous.ids, ids)) {
+    return previous;
+  }
+  const operation = { operationId: newOperationId(), ids: ids.slice(), action: action, confirmation: confirmation };
+  bulkOperations[kind] = operation;
+  return operation;
+}
+
+function setBulkBusy(kind, busy) {
+  if (kind === 'recipes') recipeBulkBusy = busy;
+  else licenseBulkBusy = busy;
+  if (!main || typeof main.querySelectorAll !== 'function') return;
+  main.querySelectorAll('button, input, select').forEach((control) => {
+    if (busy) {
+      if (control.getAttribute('data-bulk-original-disabled') === null) {
+        control.setAttribute('data-bulk-original-disabled', control.disabled ? 'true' : 'false');
+      }
+      control.disabled = true;
+    } else if (control.getAttribute('data-bulk-original-disabled') !== null) {
+      control.disabled = control.getAttribute('data-bulk-original-disabled') === 'true';
+      control.removeAttribute('data-bulk-original-disabled');
+    }
+  });
+}
+
+function resetBulkSelection(kind) {
+  if (kind === 'recipes') {
+    recipeSelection.clear();
+    bulkOperations.recipes = null;
+  } else {
+    licenseSelection.clear();
+    bulkOperations.licenses = null;
+  }
+}
+
+function renderBulkSummary(kind, result) {
+  const container = document.getElementById(kind === 'recipes' ? 'recipe-bulk-result' : 'user-bulk-result');
+  if (!container) return;
+  const results = Array.isArray(result?.results) ? result.results : [];
+  const failed = results.filter((item) => item && item.outcome === 'failed');
+  const succeeded = Number(result?.succeeded ?? results.filter((item) => item && item.outcome === 'success').length);
+  const unchanged = Number(result?.unchanged ?? results.filter((item) => item && item.outcome === 'unchanged').length);
+  const failedCount = Number(result?.failed ?? failed.length);
+  const status = String(result?.status || 'unknown');
+  const statusLabel = status === 'failed' ? 'Falló' : status === 'completed' ? 'Completado' : 'Estado no disponible';
+  container.innerHTML =
+    '<div class="card report" role="status" aria-live="polite">' +
+      '<h2 style="font-size:16px;margin:0 0 8px">Resultado del lote</h2>' +
+      '<p style="margin:0;color:#6B655F;font-size:13px">' +
+        'Estado: <strong>' + escapeHtml(statusLabel) + '</strong> · ' +
+        'Éxitos: <strong>' + succeeded + '</strong> · ' +
+        'Sin cambios: <strong>' + unchanged + '</strong> · ' +
+        'Fallos: <strong>' + failedCount + '</strong> · ' +
+        'Total: <strong>' + Number(result?.total ?? results.length) + '</strong>' +
+      '</p>' +
+      (kind === 'licenses' && result?.action === 'revoke'
+        ? '<p style="margin:8px 0 0;font-size:13px">Revocados: <strong>' + succeeded +
+          '</strong> · Ya revocados: <strong>' + unchanged + '</strong> · Fallaron: <strong>' + failedCount + '</strong></p>'
+        : '') +
+      (failed.length > 0
+        ? '<div class="report-line report-error" style="margin-top:10px">IDs fallidos: ' +
+          failed.map((item) => '<span style="display:block">' + escapeHtml(item.id) +
+            (item.message ? ' — ' + escapeHtml(item.message) : '') + '</span>').join('') +
+          '</div>'
+        : '') +
+    '</div>';
+}
+
+function toastBulkResult(result, subject) {
+  const status = String(result?.status || 'unknown');
+  const failed = Number(result?.failed ?? 0);
+  if (status === 'failed') {
+    toast('El lote se revirtió; no se aplicaron cambios.', true);
+  } else if (status === 'completed' && failed > 0) {
+    toast('Lote de ' + subject + ' finalizado con ' + failed + ' fallos.', true);
+  } else if (status === 'completed') {
+    const unchanged = Number(result?.unchanged ?? 0);
+    toast(unchanged > 0
+      ? 'Lote de ' + subject + ' completado; ' + unchanged + ' sin cambios.'
+      : 'Lote de ' + subject + ' completado.');
+  } else {
+    toast('El servidor devolvió un estado de lote no reconocido.', true);
+  }
+}
+
+function recipeBulkBarHtml() {
+  return '<div id="recipe-bulk-bar" class="bulk-bar" hidden>' +
+    '<strong><span id="recipe-selection-count">0</span> seleccionadas</strong>' +
+    '<span class="bulk-scope">Sólo recetas visibles</span>' +
+    '<div class="actions">' +
+      '<button class="btn btn-sm" data-testid="recipe-bulk-publish" data-recipe-bulk="publish">Publicar</button>' +
+      '<button class="btn btn-ghost btn-sm" data-testid="recipe-bulk-draft" data-recipe-bulk="draft">Borrador</button>' +
+      '<button class="btn btn-ghost btn-sm" data-testid="recipe-bulk-unpublish" data-recipe-bulk="unpublish">Despublicar</button>' +
+      '<button class="btn btn-danger btn-sm" data-testid="recipe-bulk-delete" data-recipe-bulk="delete">Eliminar</button>' +
+    '</div>' +
+  '</div>';
+}
+
+function syncRecipeSelectionUi(rows) {
+  const bar = document.getElementById('recipe-bulk-bar');
+  const count = document.getElementById('recipe-selection-count');
+  const master = document.getElementById('recipe-select-all');
+  const visibleIds = rows.map((row) => Number(row.id));
+  const selectedVisible = visibleIds.filter((id) => recipeSelection.has(id));
+  if (bar) bar.hidden = recipeSelection.size === 0;
+  if (count) count.textContent = String(recipeSelection.size);
+  if (master) {
+    master.checked = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
+    master.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visibleIds.length;
+  }
+  document.querySelectorAll('[data-recipe-select]').forEach((input) => {
+    input.checked = recipeSelection.has(Number(input.dataset.recipeSelect));
+    input.disabled = recipeBulkBusy;
+  });
+}
+
+function recipeDeleteModal(ids) {
+  openModal(
+    '<h2>Eliminar recetas</h2>' +
+    '<p>Vas a eliminar <strong>' + ids.length + ' recetas</strong>. Esta acción puede afectar colecciones y contenido publicado y no se puede deshacer.</p>' +
+    '<form id="recipe-delete-confirm-form">' +
+      '<div class="field"><label for="recipe-delete-confirmation">Escribí ELIMINAR para continuar</label>' +
+      '<input id="recipe-delete-confirmation" data-testid="recipe-bulk-delete-confirmation" autocomplete="off" required></div>' +
+      '<div id="recipe-delete-confirmation-error" class="report-line report-error" hidden></div>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" id="cancel">Cancelar</button>' +
+      '<button type="submit" class="btn btn-danger" data-testid="recipe-bulk-delete-confirm">Eliminar ' + ids.length + '</button></div>' +
+    '</form>',
+  );
+  document.getElementById('cancel').addEventListener('click', closeModal);
+  document.getElementById('recipe-delete-confirm-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const input = document.getElementById('recipe-delete-confirmation');
+    const error = document.getElementById('recipe-delete-confirmation-error');
+    if (input.value.trim() !== 'ELIMINAR') {
+      error.textContent = 'La confirmación debe coincidir exactamente con ELIMINAR.';
+      error.hidden = false;
+      input.focus();
+      return;
+    }
+    closeModal();
+    await executeRecipeBulk('delete', 'ELIMINAR', ids);
+  });
+}
+
+async function executeRecipeBulk(action, confirmation, inputIds) {
+  if (recipeBulkBusy) return;
+  const ids = (inputIds || Array.from(recipeSelection)).map(Number).filter((id) => Number.isInteger(id) && id > 0);
+  if (ids.length === 0) return;
+  const operation = getBulkOperation('recipes', action, ids, confirmation);
+  setBulkBusy('recipes', true);
+  try {
+    const result = await api('/recipes/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ ids: operation.ids, action: operation.action, operationId: operation.operationId,
+        ...(operation.confirmation ? { confirmation: operation.confirmation } : {}) }),
+    });
+    recipeBulkResult = result;
+    if (result && (result.status === 'completed' || result.status === 'failed')) {
+      resetBulkSelection('recipes');
+      toastBulkResult(result, 'recetas');
+      await loadRecipeTable({ clearResult: false });
+    } else {
+      renderBulkSummary('recipes', result);
+      toastBulkResult(result, 'recetas');
+    }
+  } catch (error) {
+    // Se conservan selección y operationId para reintentar exactamente el mismo lote.
+    toast(error.message, true);
+  } finally {
+    setBulkBusy('recipes', false);
+    syncRecipeSelectionUi(visibleRecipeRows);
+  }
+}
+
+async function handleRecipeBulkAction(action) {
+  if (recipeBulkBusy) return;
+  const ids = Array.from(recipeSelection);
+  if (ids.length === 0) return;
+  if (action === 'delete') {
+    recipeDeleteModal(ids);
+    return;
+  }
+  await executeRecipeBulk(action, null, ids);
+}
+
+async function viewRecipes(viewToken) {
+  const currentViewToken = viewToken ?? ++adminNavigationToken;
+  recipeViewToken = currentViewToken;
+  resetBulkSelection('recipes');
+  recipeBulkResult = null;
   main.innerHTML = '<div class="empty">Cargando…</div>';
   const collections = await getCollections();
+  if (adminNavigationToken !== currentViewToken) return;
 
   main.innerHTML =
     '<div class="page-head"><div><h1>Recetas</h1><p>Crear, editar y publicar el contenido del recetario</p></div>' +
@@ -155,22 +386,27 @@ async function viewRecipes() {
   let debounce;
   document.getElementById('search').addEventListener('input', (event) => {
     recipeFilters.search = event.target.value;
+    resetBulkSelection('recipes');
     clearTimeout(debounce);
-    debounce = setTimeout(loadRecipeTable, 280);
+    debounce = setTimeout(() => loadRecipeTable({ clearResult: true }), 280);
   });
   document.getElementById('status').addEventListener('change', (event) => {
-    recipeFilters.status = event.target.value; loadRecipeTable();
+    recipeFilters.status = event.target.value; resetBulkSelection('recipes'); loadRecipeTable({ clearResult: true });
   });
   document.getElementById('collection').addEventListener('change', (event) => {
-    recipeFilters.collection = event.target.value; loadRecipeTable();
+    recipeFilters.collection = event.target.value; resetBulkSelection('recipes'); loadRecipeTable({ clearResult: true });
   });
 
-  await loadRecipeTable();
+  await loadRecipeTable({ clearResult: true });
 }
 
-async function loadRecipeTable() {
+async function loadRecipeTable(options) {
   const container = document.getElementById('recipe-table');
   if (!container) return;
+  const requestToken = ++recipeRequestToken;
+  if (!options || options.clearResult !== false) recipeBulkResult = null;
+  const currentViewToken = recipeViewToken;
+  resetBulkSelection('recipes');
   container.innerHTML = '<div class="empty">Cargando…</div>';
 
   const params = new URLSearchParams();
@@ -180,17 +416,23 @@ async function loadRecipeTable() {
   params.set('limit', '200');
 
   const data = await api('/recipes?' + params.toString());
+  if (requestToken !== recipeRequestToken || currentViewToken !== recipeViewToken || document.getElementById('recipe-table') !== container) return;
   const rows = data.rows || [];
+  visibleRecipeRows = rows;
 
   if (rows.length === 0) {
-    container.innerHTML = '<div class="empty">No hay recetas que coincidan con la búsqueda.</div>';
+    container.innerHTML = recipeBulkBarHtml() + '<div class="empty">No hay recetas que coincidan con la búsqueda.</div>' +
+      '<div id="recipe-bulk-result"></div>';
+    if (recipeBulkResult) renderBulkSummary('recipes', recipeBulkResult);
     return;
   }
 
   container.innerHTML =
-    '<table><thead><tr><th>Título</th><th>Estado</th><th>Tiempo</th><th>Porciones</th><th>Actualizada</th><th></th></tr></thead><tbody>' +
+    recipeBulkBarHtml() +
+    '<table><thead><tr><th><input type="checkbox" id="recipe-select-all" data-testid="recipe-bulk-select-all" aria-label="Seleccionar todas las recetas visibles"></th><th>Título</th><th>Estado</th><th>Tiempo</th><th>Porciones</th><th>Actualizada</th><th></th></tr></thead><tbody>' +
     rows.map((row) =>
       '<tr>' +
+        '<td><input type="checkbox" data-testid="recipe-bulk-select-' + escapeHtml(row.id) + '" data-recipe-select="' + escapeHtml(row.id) + '" aria-label="Seleccionar receta ' + escapeHtml(row.title) + '"></td>' +
         '<td><strong>' + escapeHtml(row.title) + '</strong><br><span style="font-size:12px;color:#6B655F">' + escapeHtml(row.slug) + '</span></td>' +
         '<td>' + statusPill(row.status) + '</td>' +
         '<td>' + (row.totalTime || 0) + ' min</td>' +
@@ -204,7 +446,26 @@ async function loadRecipeTable() {
           '<button class="btn btn-danger btn-sm" data-delete="' + row.id + '">Eliminar</button>' +
         '</td>' +
       '</tr>').join('') +
-    '</tbody></table>';
+    '</tbody></table><div id="recipe-bulk-result"></div>';
+
+  container.querySelectorAll('[data-recipe-select]').forEach((input) => {
+    input.checked = recipeSelection.has(Number(input.dataset.recipeSelect));
+    input.addEventListener('change', () => {
+      const id = Number(input.dataset.recipeSelect);
+      if (input.checked) recipeSelection.add(id); else recipeSelection.delete(id);
+      syncRecipeSelectionUi(rows);
+    });
+  });
+  document.getElementById('recipe-select-all').addEventListener('change', (event) => {
+    if (event.target.checked) rows.forEach((row) => recipeSelection.add(Number(row.id)));
+    else rows.forEach((row) => recipeSelection.delete(Number(row.id)));
+    syncRecipeSelectionUi(rows);
+  });
+  container.querySelectorAll('[data-recipe-bulk]').forEach((button) => {
+    button.addEventListener('click', () => handleRecipeBulkAction(button.dataset.recipeBulk));
+  });
+  syncRecipeSelectionUi(rows);
+  if (recipeBulkResult) renderBulkSummary('recipes', recipeBulkResult);
 
   container.querySelectorAll('[data-edit]').forEach((button) => {
     button.addEventListener('click', () => editRecipe(Number(button.dataset.edit)));
@@ -1091,15 +1352,126 @@ function deviceCardHtml(device) {
   '</div>';
 }
 
-async function viewUsers() {
+function userBulkBarHtml() {
+  return '<div id="user-bulk-bar" class="bulk-bar" hidden>' +
+    '<strong><span id="license-selection-count">0</span> seleccionados</strong>' +
+    '<span class="bulk-scope">Sólo usuarios visibles</span>' +
+    '<div class="actions">' +
+      '<button class="btn btn-danger btn-sm" data-testid="license-bulk-revoke" data-license-bulk="revoke">Revocar</button>' +
+      '<button class="btn btn-ghost btn-sm" data-testid="license-bulk-archive" data-license-bulk="archive">Archivar</button>' +
+      '<button class="btn btn-ghost btn-sm" data-testid="license-bulk-restore" data-license-bulk="restore">Restaurar</button>' +
+    '</div>' +
+  '</div>';
+}
+
+function syncLicenseSelectionUi(users) {
+  const bar = document.getElementById('user-bulk-bar');
+  const count = document.getElementById('license-selection-count');
+  const master = document.getElementById('license-select-all');
+  const visibleIds = users.map((user) => Number(user.licenseId)).filter((id) => Number.isInteger(id) && id > 0);
+  const selectedVisible = visibleIds.filter((id) => licenseSelection.has(id));
+  if (bar) bar.hidden = licenseSelection.size === 0;
+  if (count) count.textContent = String(licenseSelection.size);
+  if (master) {
+    master.checked = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
+    master.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visibleIds.length;
+  }
+  document.querySelectorAll('[data-license-select]').forEach((input) => {
+    input.checked = licenseSelection.has(Number(input.dataset.licenseSelect));
+    input.disabled = licenseBulkBusy;
+  });
+}
+
+function licenseBulkModal(action, ids) {
+  const label = action === 'revoke' ? 'revocar' : 'archivar';
+  const consequence = action === 'revoke'
+    ? 'Sus sesiones activas dejarán de funcionar y no podrán ingresar.'
+    : 'Se ocultarán de la vista activa, pero conservarán acceso, historial, licencia, auditorías, pedidos y dispositivos. Archivar no revoca el acceso.';
+  openModal(
+    '<h2>' + (action === 'revoke' ? 'Revocar accesos' : 'Archivar usuarios') + '</h2>' +
+    '<p>Vas a ' + label + ' <strong>' + ids.length + ' usuarios</strong>. ' + consequence + '</p>' +
+    '<form id="license-bulk-confirm-form">' +
+      '<div class="field"><label for="license-bulk-confirmation">Escribí CONFIRMAR para continuar</label>' +
+      '<input id="license-bulk-confirmation" data-testid="license-bulk-confirmation" autocomplete="off" required></div>' +
+      '<div id="license-bulk-confirmation-error" class="report-line report-error" hidden></div>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" id="cancel">Cancelar</button>' +
+      '<button type="submit" class="btn btn-danger" data-testid="license-bulk-confirm">' + (action === 'revoke' ? 'Revocar' : 'Archivar') + ' ' + ids.length + '</button></div>' +
+    '</form>',
+  );
+  document.getElementById('cancel').addEventListener('click', closeModal);
+  document.getElementById('license-bulk-confirm-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const input = document.getElementById('license-bulk-confirmation');
+    const error = document.getElementById('license-bulk-confirmation-error');
+    if (input.value.trim() !== 'CONFIRMAR') {
+      error.textContent = 'La confirmación debe coincidir exactamente con CONFIRMAR.';
+      error.hidden = false;
+      input.focus();
+      return;
+    }
+    closeModal();
+    await executeLicenseBulk(action, 'CONFIRMAR', ids);
+  });
+}
+
+async function executeLicenseBulk(action, confirmation, inputIds) {
+  if (licenseBulkBusy) return;
+  const ids = (inputIds || Array.from(licenseSelection)).map(Number).filter((id) => Number.isInteger(id) && id > 0);
+  if (ids.length === 0) return;
+  const operation = getBulkOperation('licenses', action, ids, confirmation);
+  setBulkBusy('licenses', true);
+  try {
+    const result = await api('/licenses/bulk-action', {
+      method: 'POST',
+      body: JSON.stringify({ ids: operation.ids, action: operation.action, operationId: operation.operationId,
+        ...(operation.confirmation ? { confirmation: operation.confirmation } : {}) }),
+    });
+    licenseBulkResult = result;
+    if (result && (result.status === 'completed' || result.status === 'failed')) {
+      resetBulkSelection('licenses');
+      toastBulkResult(result, 'usuarios');
+      await loadUsersTable({ clearResult: false });
+    } else {
+      renderBulkSummary('licenses', result);
+      toastBulkResult(result, 'usuarios');
+    }
+  } catch (error) {
+    // Se conservan selección y operationId para reintentar exactamente el mismo lote.
+    toast(error.message, true);
+  } finally {
+    setBulkBusy('licenses', false);
+    syncLicenseSelectionUi(visibleLicenseUsers);
+  }
+}
+
+async function handleLicenseBulkAction(action) {
+  if (licenseBulkBusy) return;
+  const ids = Array.from(licenseSelection);
+  if (ids.length === 0) return;
+  if (action === 'revoke' || action === 'archive') {
+    licenseBulkModal(action, ids);
+    return;
+  }
+  await executeLicenseBulk(action, null, ids);
+}
+
+async function viewUsers(viewToken) {
+  const currentViewToken = viewToken ?? ++adminNavigationToken;
+  userViewToken = currentViewToken;
+  resetBulkSelection('licenses');
+  licenseBulkResult = null;
   main.innerHTML = '<div class="empty">Cargando…</div>';
-  const [users, codes] = await Promise.all([api('/users'), api('/codes')]);
+  const [users, codes] = await Promise.all([loadUsersData(), api('/codes')]);
+  if (adminNavigationToken !== currentViewToken) return;
 
   main.innerHTML =
     '<div class="page-head"><div><h1>Usuarios y accesos</h1><p>Quién puede entrar a la aplicación</p></div>' +
     '<div class="actions"><button class="btn btn-ghost" id="bulk">Alta masiva</button>' +
     '<button class="btn" id="grant">Dar acceso</button></div></div>' +
-    '<div class="toolbar"><input id="user-search" placeholder="Buscar por correo…"></div>' +
+    '<div class="toolbar"><input id="user-search" data-testid="license-search" placeholder="Buscar por correo…" value="' + escapeHtml(userFilters.search) + '">' +
+      '<select id="user-archived" data-testid="license-archived-filter" aria-label="Filtrar usuarios archivados">' +
+        '<option value="active">No archivados</option><option value="archived">Archivados</option><option value="all">Todos</option>' +
+      '</select></div>' +
     '<div class="card" style="padding:0;margin-bottom:20px" id="users-table"></div>' +
     (codes.length > 0
       ? '<div class="card"><h2 style="font-size:16px;margin-bottom:6px">Códigos pendientes</h2>' +
@@ -1111,31 +1483,59 @@ async function viewUsers() {
         '</tbody></table></div>'
       : '');
 
+  document.getElementById('user-archived').value = userFilters.archived;
   renderUsersTable(users);
   document.getElementById('grant').addEventListener('click', grantAccess);
   document.getElementById('bulk').addEventListener('click', bulkGrantAccess);
 
   let debounce;
   document.getElementById('user-search').addEventListener('input', (event) => {
+    userFilters.search = event.target.value;
+    resetBulkSelection('licenses');
     clearTimeout(debounce);
-    debounce = setTimeout(async () => {
-      const filtered = await api('/users?search=' + encodeURIComponent(event.target.value));
-      renderUsersTable(filtered);
-    }, 280);
+    debounce = setTimeout(() => loadUsersTable({ clearResult: true }), 280);
   });
+  document.getElementById('user-archived').addEventListener('change', (event) => {
+    userFilters.archived = event.target.value;
+    resetBulkSelection('licenses');
+    loadUsersTable({ clearResult: true });
+  });
+}
+
+async function loadUsersData() {
+  const params = new URLSearchParams();
+  params.set('archived', userFilters.archived);
+  if (userFilters.search.trim()) params.set('search', userFilters.search.trim());
+  return api('/users?' + params.toString());
+}
+
+async function loadUsersTable(options) {
+  const container = document.getElementById('users-table');
+  if (!container) return;
+  const requestToken = ++userRequestToken;
+  const currentViewToken = userViewToken;
+  if (!options || options.clearResult !== false) licenseBulkResult = null;
+  resetBulkSelection('licenses');
+  container.innerHTML = '<div class="empty">Cargando…</div>';
+  const users = await loadUsersData();
+  if (requestToken !== userRequestToken || currentViewToken !== userViewToken || document.getElementById('users-table') !== container) return;
+  renderUsersTable(users);
 }
 
 function renderUsersTable(users) {
   const container = document.getElementById('users-table');
   if (!container) return;
+  visibleLicenseUsers = users;
 
   if (users.length === 0) {
-    container.innerHTML = '<div class="empty">No hay usuarios que coincidan.</div>';
+    container.innerHTML = userBulkBarHtml() + '<div class="empty">No hay usuarios que coincidan.</div>' + '<div id="user-bulk-result"></div>';
+    if (licenseBulkResult) renderBulkSummary('licenses', licenseBulkResult);
     return;
   }
 
   container.innerHTML =
-    '<div class="users-table-scroll"><table><thead><tr><th>Correo</th><th>Estado</th><th>Acceso</th><th>Origen</th><th>Alta</th><th>Último ingreso</th><th>Dispositivos</th><th></th></tr></thead><tbody>' +
+    userBulkBarHtml() +
+    '<div class="users-table-scroll"><table><thead><tr><th><input type="checkbox" id="license-select-all" data-testid="license-bulk-select-all" aria-label="Seleccionar todos los usuarios visibles"></th><th>Correo</th><th>Estado</th><th>Archivado</th><th>Acceso</th><th>Origen</th><th>Alta</th><th>Último ingreso</th><th>Dispositivos</th><th></th></tr></thead><tbody>' +
     users.map((user) => {
       const status = String(user.status || 'active');
       const safeStatus = Object.prototype.hasOwnProperty.call(LICENSE_LABELS, status) ? status : 'unknown';
@@ -1143,8 +1543,12 @@ function renderUsersTable(users) {
       const safeAccessPill = ACCESS_PILLS[accessStatus] || 'archived';
       const accessLabel = ACCESS_LABELS[accessStatus] || 'Sin datos';
       const activeDeviceCount = user.activeDeviceCount ?? 0;
-      return '<tr><td><strong>' + escapeHtml(user.email) + '</strong></td>' +
+      const archived = Boolean(user.archivedAt);
+      const licenseId = Number(user.licenseId);
+      return '<tr><td><input type="checkbox" data-testid="license-bulk-select-' + escapeHtml(licenseId) + '" data-license-select="' + escapeHtml(licenseId) + '" aria-label="Seleccionar usuario ' + escapeHtml(user.email) + '"></td>' +
+      '<td><strong>' + escapeHtml(user.email) + '</strong></td>' +
       '<td><span class="pill pill-' + safeStatus + '">' + escapeHtml(LICENSE_LABELS[status] || 'Sin datos') + '</span></td>' +
+      '<td>' + (archived ? '<span class="pill pill-archived">Archivado</span><br><span style="font-size:12px;color:#6B655F">' + escapeHtml(formatDate(user.archivedAt)) + '</span>' : '—') + '</td>' +
       '<td><span class="pill pill-' + safeAccessPill + '">' + escapeHtml(accessLabel) + '</span></td>' +
       '<td style="font-size:13px;color:#6B655F">' + escapeHtml(user.source || '—') + '</td>' +
       '<td style="font-size:13px;color:#6B655F">' + escapeHtml(formatDate(user.grantedAt)) + '</td>' +
@@ -1152,12 +1556,32 @@ function renderUsersTable(users) {
       '<td><button class="btn btn-ghost btn-sm" data-devices="' + escapeHtml(user.licenseId) + '" data-email="' + escapeHtml(user.email) + '">' +
         escapeHtml(activeDeviceCount) + '/' + MAX_ACTIVE_DEVICES + ' · Ver</button></td>' +
       '<td style="text-align:right;white-space:nowrap">' +
-        (status === 'active'
+        (archived
+          ? '<button class="btn btn-ghost btn-sm" data-testid="license-restore-' + escapeHtml(user.licenseId) + '" data-restore="' + escapeHtml(user.licenseId) + '">Restaurar</button>'
+          : status === 'active'
           ? '<button class="btn btn-danger btn-sm" data-revoke="' + escapeHtml(user.email) + '">Revocar</button>'
           : '<button class="btn btn-ghost btn-sm" data-activate="' + escapeHtml(user.email) + '">Reactivar</button>') +
+        (!archived ? ' <button class="btn btn-ghost btn-sm" data-archive="' + escapeHtml(user.licenseId) + '">Archivar</button>' : '') +
       '</td></tr>';
     }).join('') +
-    '</tbody></table></div>';
+    '</tbody></table></div><div id="user-bulk-result"></div>';
+
+  container.querySelectorAll('[data-license-select]').forEach((input) => {
+    input.checked = licenseSelection.has(Number(input.dataset.licenseSelect));
+    input.addEventListener('change', () => {
+      const id = Number(input.dataset.licenseSelect);
+      if (input.checked) licenseSelection.add(id); else licenseSelection.delete(id);
+      syncLicenseSelectionUi(users);
+    });
+  });
+  document.getElementById('license-select-all').addEventListener('change', (event) => {
+    if (event.target.checked) users.forEach((user) => licenseSelection.add(Number(user.licenseId)));
+    else users.forEach((user) => licenseSelection.delete(Number(user.licenseId)));
+    syncLicenseSelectionUi(users);
+  });
+  container.querySelectorAll('[data-license-bulk]').forEach((button) => {
+    button.addEventListener('click', () => handleLicenseBulkAction(button.dataset.licenseBulk));
+  });
 
   container.querySelectorAll('[data-devices]').forEach((button) => {
     button.addEventListener('click', () => showDevices(Number(button.dataset.devices), button.dataset.email));
@@ -1169,9 +1593,18 @@ function renderUsersTable(users) {
     });
   });
 
+  container.querySelectorAll('[data-archive]').forEach((button) => {
+    button.addEventListener('click', () => licenseBulkModal('archive', [Number(button.dataset.archive)]));
+  });
+
   container.querySelectorAll('[data-activate]').forEach((button) => {
     button.addEventListener('click', () => changeLicense(button.dataset.activate, 'active'));
   });
+  container.querySelectorAll('[data-restore]').forEach((button) => {
+    button.addEventListener('click', () => executeLicenseBulk('restore', null, [Number(button.dataset.restore)]));
+  });
+  syncLicenseSelectionUi(users);
+  if (licenseBulkResult) renderBulkSummary('licenses', licenseBulkResult);
 }
 
 async function showDevices(licenseId, email) {
@@ -1586,10 +2019,11 @@ const VIEWS = {
 
 document.querySelectorAll('.nav-item[data-view]').forEach((button) => {
   button.addEventListener('click', async () => {
+    const navigationToken = ++adminNavigationToken;
     document.querySelectorAll('.nav-item').forEach((item) => item.classList.remove('active'));
     button.classList.add('active');
     try {
-      await VIEWS[button.dataset.view]();
+      await VIEWS[button.dataset.view](navigationToken);
     } catch (error) {
       main.innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>';
     }

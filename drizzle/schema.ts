@@ -149,6 +149,8 @@ export const licenses = mysqlTable(
      */
     accessTrackingStartedAt: timestamp("accessTrackingStartedAt"),
     expiresAt: timestamp("expiresAt"),
+    /** Sólo oculta la fila del panel; no cambia el derecho de acceso. */
+    archivedAt: timestamp("archivedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -405,6 +407,23 @@ export const shopifyReconciliationRuns = mysqlTable(
 /* ------------------------------------------------------------------ */
 /* 2. CATÁLOGO EDITORIAL                                              */
 /* ------------------------------------------------------------------ */
+
+/** Idempotencia y resultados de las operaciones masivas del panel. */
+export const adminBulkOperations = mysqlTable("adminBulkOperations", {
+  operationId: varchar("operationId", { length: 36 }).primaryKey(),
+  requestHash: varchar("requestHash", { length: 64 }).notNull(),
+  entity: mysqlEnum("entity", ["recipes", "licenses"]).notNull(),
+  action: varchar("action", { length: 24 }).notNull(),
+  actor: varchar("actor", { length: 120 }).notNull(),
+  ids: json("ids").notNull(),
+  status: mysqlEnum("status", ["processing", "completed", "failed"]).default("processing").notNull(),
+  succeeded: int("succeeded").default(0).notNull(),
+  unchanged: int("unchanged").default(0).notNull(),
+  failed: int("failed").default(0).notNull(),
+  result: json("result"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  completedAt: timestamp("completedAt"),
+});
 
 /**
  * Maestro de ingredientes reutilizable.

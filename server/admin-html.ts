@@ -244,6 +244,14 @@ ${BASE_STYLES}
     padding: 8px 12px; border: 1px solid ${BRAND.border}; border-radius: 9px; background: #fff;
   }
   .toolbar input { flex: 1; min-width: 200px; }
+  .bulk-bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 12px 14px; margin-bottom: 10px;
+    background: #FFF8F3; border: 1px solid ${BRAND.border}; border-radius: 10px;
+  }
+  .bulk-bar .bulk-scope { color: ${BRAND.muted}; font-size: 12px; margin-right: auto; }
+  .bulk-bar .actions { margin-left: auto; }
+  .bulk-bar[hidden] { display: none; }
   .modal-backdrop {
     position: fixed; inset: 0; background: rgba(47,42,38,.45);
     display: none; align-items: flex-start; justify-content: center;
@@ -309,6 +317,8 @@ ${BASE_STYLES}
     .users-table-scroll table { min-width: 900px; }
   }
   @media (max-width: 640px) {
+    .bulk-bar .bulk-scope { flex-basis: 100%; order: 3; }
+    .bulk-bar .actions { margin-left: 0; width: 100%; }
     .recipe-ingredient-entry, .recipe-step-entry { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     .recipe-ingredient-entry > input:nth-of-type(1) { grid-column: 1 / -1; }
     .recipe-ingredient-entry > input:nth-of-type(4) { grid-column: 1 / -1; grid-row: auto; }

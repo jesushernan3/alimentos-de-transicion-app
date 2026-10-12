@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { and, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, isNotNull, ne, or, sql } from "drizzle-orm";
 
 import {
   accessCodes,
@@ -465,9 +465,15 @@ async function issueSessionFor(
   }
 
   const token = generateToken();
+  class LicenseUnavailableDuringLogin extends Error {
+    constructor(readonly status: LicenseStatus | "none") { super("Licencia no disponible al emitir sesión"); }
+  }
   try {
     await db.transaction(async (tx) => {
-      await tx.execute(sql`SELECT id FROM licenses WHERE id = ${license.id} FOR UPDATE`);
+      const [currentLicense] = await tx.select().from(licenses).where(eq(licenses.id, license.id)).limit(1).for("update");
+      if (!currentLicense || !isLicenseUsable(currentLicense)) {
+        throw new LicenseUnavailableDuringLogin(currentLicense ? currentLicense.status as LicenseStatus : "none");
+      }
       if (licenseDeviceId) {
         const [currentDevice] = await tx.select().from(licenseDevices)
           .where(eq(licenseDevices.id, licenseDeviceId)).limit(1).for("update");
@@ -481,8 +487,8 @@ async function issueSessionFor(
     await tx
       .update(licenses)
       .set({
-        userId: license.userId ?? user.id,
-        activatedAt: license.activatedAt ?? now,
+        userId: currentLicense.userId ?? user.id,
+        activatedAt: currentLicense.activatedAt ?? now,
         firstLoginAt: sql`COALESCE(${licenses.firstLoginAt}, ${now})`,
         lastLoginAt: now,
         accessTrackingStartedAt: sql`COALESCE(${licenses.accessTrackingStartedAt}, ${now})`,
@@ -498,6 +504,12 @@ async function issueSessionFor(
     });
   });
   } catch (error) {
+    if (error instanceof LicenseUnavailableDuringLogin) {
+      return { reason: "no-license", result: {
+        authorized: false, status: error.status, email: normalized, name: user.name ?? null,
+        expiresAt: null, checkedAt: now.toISOString(),
+      } };
+    }
     if (error instanceof DeviceAccessError) {
       return { reason: error.reason, result: {
         authorized: false, status: license.status as LicenseStatus,
@@ -847,51 +859,47 @@ export async function grantLicense(input: GrantLicenseInput): Promise<License> {
 }
 
 /** Cambia el estado de una licencia y registra el cambio. */
+type AccessTransaction = Parameters<Parameters<NonNullable<Awaited<ReturnType<typeof getDb>>>["transaction"]>[0]>[0];
+
 export async function setLicenseStatus(
-  email: string,
-  status: LicenseStatus,
-  actorEmail?: string | null,
-  detail?: string | null,
+  email: string, status: LicenseStatus, actorEmail?: string | null, detail?: string | null,
 ): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Base de datos no disponible");
+  const [row] = await db.select({ id: licenses.id }).from(licenses)
+    .where(eq(licenses.email, normalizeEmail(email))).limit(1);
+  if (row) await db.transaction((tx) => setLicenseStatusById(row.id, status, tx, actorEmail, detail));
+}
 
-  const normalized = normalizeEmail(email);
-  const rows = await db.select().from(licenses).where(eq(licenses.email, normalized)).limit(1);
-  if (rows.length === 0) return;
-
-  const startsReliableTracking =
-    status === "active" &&
-    rows[0].status !== "active" &&
-    !rows[0].firstLoginAt &&
-    !rows[0].accessTrackingStartedAt;
-
-  await db
-    .update(licenses)
-    .set({
-      status,
-      ...(startsReliableTracking ? { accessTrackingStartedAt: new Date() } : {}),
-    })
-    .where(eq(licenses.id, rows[0].id));
-
-  const action =
-    status === "active" ? "reactivated" : status === "refunded" ? "refunded" : "revoked";
-
-  await db.insert(licenseEvents).values({
-    licenseId: rows[0].id,
-    email: normalized,
-    action,
-    actorEmail: actorEmail ?? null,
-    detail: detail ?? null,
-  });
-
-  // Al perder el derecho de acceso se cierran las sesiones abiertas.
-  if (status !== "active" && rows[0].userId) {
-    await db
-      .update(sessions)
-      .set({ revokedAt: new Date() })
-      .where(and(eq(sessions.userId, rows[0].userId), isNull(sessions.revokedAt)));
+/** Comparte la mutación y auditoría entre acciones individuales y masivas. */
+export async function setLicenseStatusById(
+  id: number, status: LicenseStatus, tx: AccessTransaction,
+  actorEmail?: string | null, detail?: string | null,
+): Promise<boolean> {
+  if (!["active", "pending", "revoked", "refunded"].includes(status)) throw new Error("Estado de licencia inválido.");
+  const [row] = await tx.select().from(licenses).where(eq(licenses.id, id)).limit(1).for("update");
+  if (!row) throw new Error("La licencia no existe.");
+  const changed = row.status !== status;
+  if (changed) {
+    const startsTracking = status === "active" && !row.firstLoginAt && !row.accessTrackingStartedAt;
+    await tx.update(licenses).set({ status,
+      ...(startsTracking ? { accessTrackingStartedAt: new Date() } : {}),
+    }).where(eq(licenses.id, id));
+    await tx.insert(licenseEvents).values({ licenseId: id, email: row.email,
+      action: status === "active" ? "reactivated" : status === "refunded" ? "refunded" : "revoked",
+      actorEmail: actorEmail ?? null, detail: detail ?? null,
+    });
   }
+  if (status !== "active") {
+    // Incluir vínculos de dispositivo y sesiones históricas por correo, aunque
+    // userId no haya quedado vinculado a la licencia en una importación antigua.
+    await tx.update(sessions).set({ revokedAt: new Date() }).where(and(isNull(sessions.revokedAt), or(
+      row.userId ? eq(sessions.userId, row.userId) : sql`FALSE`,
+      sql`${sessions.licenseDeviceId} IN (SELECT id FROM licenseDevices WHERE licenseId = ${id})`,
+      sql`${sessions.userId} IN (SELECT id FROM users WHERE LOWER(TRIM(email)) = ${normalizeEmail(row.email)})`,
+    )));
+  }
+  return changed;
 }
 
 export type AccessUsageStatus = "pending" | "used" | "unknown";
@@ -915,13 +923,14 @@ export function deriveAccessUsageStatus(input: {
 }
 
 /** Listado de usuarios con su licencia, para el panel administrativo. */
-export async function listUsersWithLicenses(search?: string) {
+export async function listUsersWithLicenses(search?: string, archived: "active" | "archived" | "all" = "active") {
   const db = await getDb();
   if (!db) return [];
 
   const rows = await db
     .select({
       licenseId: licenses.id,
+      archivedAt: licenses.archivedAt,
       activeDeviceCount: sql<number>`(SELECT COUNT(*) FROM licenseDevices d WHERE d.licenseId = ${licenses.id} AND d.revokedAt IS NULL AND d.releasedAt IS NULL)`,
       email: licenses.email,
       status: licenses.status,
@@ -942,6 +951,7 @@ export async function listUsersWithLicenses(search?: string) {
     })
     .from(licenses)
     .leftJoin(users, eq(users.id, licenses.userId))
+    .where(archived === "all" ? undefined : archived === "archived" ? isNotNull(licenses.archivedAt) : isNull(licenses.archivedAt))
     .orderBy(desc(licenses.updatedAt))
     .limit(500);
 

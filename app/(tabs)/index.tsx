@@ -245,6 +245,26 @@ export default function HomeScreen() {
 
         <View style={styles.section}>
           <SectionHeader
+            title="Explorar por categorías"
+            subtitle="Encontrá ideas según el momento del día"
+          />
+          <View style={styles.categoryGrid}>
+            {categories.map((category) => (
+              <CategoryCard
+                key={category.slug}
+                category={category}
+                width={CATEGORY_CARD_WIDTH}
+                count={getRecipesForCategory(category.slug).length}
+                onPress={() => router.push(`/categoria/${category.slug}`)}
+              />
+            ))}
+          </View>
+        </View>
+
+        <HomeSectionDivider />
+
+        <View style={styles.section}>
+          <SectionHeader
             title="Recetas recomendadas"
             subtitle="Seleccionadas por nuestro equipo"
             actionLabel="Ver todas"
@@ -266,26 +286,6 @@ export default function HomeScreen() {
               />
             ))}
           </ScrollView>
-        </View>
-
-        <HomeSectionDivider />
-
-        <View style={styles.section}>
-          <SectionHeader
-            title="Explorar por categorías"
-            subtitle="Encontrá ideas según el momento del día"
-          />
-          <View style={styles.categoryGrid}>
-            {categories.map((category) => (
-              <CategoryCard
-                key={category.slug}
-                category={category}
-                width={CATEGORY_CARD_WIDTH}
-                count={getRecipesForCategory(category.slug).length}
-                onPress={() => router.push(`/categoria/${category.slug}`)}
-              />
-            ))}
-          </View>
         </View>
 
         <HomeSectionDivider />

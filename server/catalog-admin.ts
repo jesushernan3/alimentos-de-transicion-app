@@ -4,6 +4,7 @@ import {
   categories,
   catalogState,
   collections,
+  deletions,
   dietTags,
   ingredients,
   recipeCollections,
@@ -413,13 +414,15 @@ export async function updateRecipe(id: number, input: AdminRecipeInput): Promise
     ? await uniqueRecipeSlug(slugify(input.slug), id)
     : current[0].slug;
   const categoryId = input.categorySlug ? await idBySlug(categories, input.categorySlug) : null;
-  const status = input.status ?? current[0].status;
 
   await db.transaction(async (tx) => {
+    const [lockedRecipe] = await tx.select().from(recipes).where(eq(recipes.id, id)).limit(1).for("update");
+    if (!lockedRecipe) throw new Error("La receta ya no existe.");
+    const lockedStatus = input.status ?? lockedRecipe.status;
     await tx
       .update(recipes)
       .set({
-        slug,
+        slug: input.slug?.trim() ? slug : lockedRecipe.slug,
         title: input.title.trim(),
         shortDescription: input.shortDescription?.trim() || null,
         description: input.description?.trim() || null,
@@ -435,46 +438,42 @@ export async function updateRecipe(id: number, input: AdminRecipeInput): Promise
         tips: input.tips?.trim() || null,
         ...(input.extraTips === undefined ? {} : { extraTips: input.extraTips?.trim() || null }),
         notes: input.notes?.trim() || null,
-        featured: input.featured ?? current[0].featured,
-        status,
+        featured: input.featured ?? lockedRecipe.featured,
+        status: lockedStatus,
         publishedAt:
-          status === "published" ? current[0].publishedAt ?? new Date() : current[0].publishedAt,
-        version: current[0].version + 1,
+          lockedStatus === "published" ? lockedRecipe.publishedAt ?? new Date() : lockedRecipe.publishedAt,
+        version: lockedRecipe.version + 1,
       })
       .where(eq(recipes.id, id));
 
     await writeRecipeRelations(id, input, tx);
+    if (lockedStatus === "published") await tx.delete(deletions).where(and(eq(deletions.entity, "recipe"), eq(deletions.entityId, id)));
+    else if (lockedRecipe.status === "published") await registerDeletion("recipe", id, lockedRecipe.slug, tx);
+    await bumpCatalogVersion(tx, Number(lockedStatus === "published") - Number(lockedRecipe.status === "published"));
   });
-  await bumpCatalogVersion();
 }
 
 /** Cambia el estado de publicación de una receta. */
 export async function setRecipeStatus(
   id: number,
   status: "draft" | "published" | "archived",
-): Promise<void> {
-  const db = await getDb();
+  executor?: CatalogTransaction,
+  deferCatalogVersion = false,
+): Promise<boolean> {
+  if (!["draft", "published", "archived"].includes(status)) throw new Error("Estado de receta inválido.");
+  const db = executor ?? await getDb();
   if (!db) throw new Error("Base de datos no disponible");
-
-  const current = await db.select().from(recipes).where(eq(recipes.id, id)).limit(1);
-  if (current.length === 0) return;
-
-  await db
-    .update(recipes)
-    .set({
-      status,
-      version: current[0].version + 1,
-      publishedAt: status === "published" ? current[0].publishedAt ?? new Date() : current[0].publishedAt,
-    })
-    .where(eq(recipes.id, id));
-
-  // Al dejar de estar publicada hay que informar la baja: el cliente no puede
-  // deducirla de la ausencia del registro en la respuesta incremental.
-  if (status !== "published") {
-    await registerDeletion("recipe", id, current[0].slug);
-  }
-
-  await bumpCatalogVersion();
+  if (!executor) return db.transaction((tx) => setRecipeStatus(id, status, tx));
+  const [current] = await executor.select().from(recipes).where(eq(recipes.id, id)).limit(1).for("update");
+  if (!current) return false;
+  if (current.status === status) return false;
+  await executor.update(recipes).set({ status, version: current.version + 1,
+    publishedAt: status === "published" ? current.publishedAt ?? new Date() : current.publishedAt,
+  }).where(eq(recipes.id, id));
+  if (status !== "published") await registerDeletion("recipe", id, current.slug, executor);
+  else await executor.delete(deletions).where(and(eq(deletions.entity, "recipe"), eq(deletions.entityId, id)));
+  if (!deferCatalogVersion) await bumpCatalogVersion(executor, Number(status === "published") - Number(current.status === "published"));
+  return true;
 }
 
 /** Duplica una receta como borrador, con todas sus relaciones. */
@@ -494,24 +493,21 @@ export async function duplicateRecipe(id: number): Promise<number> {
 }
 
 /** Elimina una receta y registra la baja. */
-export async function deleteRecipe(id: number): Promise<void> {
-  const db = await getDb();
+export async function deleteRecipe(id: number, executor?: CatalogTransaction, deferCatalogVersion = false): Promise<boolean> {
+  const db = executor ?? await getDb();
   if (!db) throw new Error("Base de datos no disponible");
-
-  const current = await db.select().from(recipes).where(eq(recipes.id, id)).limit(1);
-  if (current.length === 0) return;
-
-  await db.delete(recipeIngredients).where(eq(recipeIngredients.recipeId, id));
-  await db.delete(recipeSteps).where(eq(recipeSteps.recipeId, id));
-  await db.delete(recipeDietTags).where(eq(recipeDietTags.recipeId, id));
-  await db.delete(recipeCollections).where(eq(recipeCollections.recipeId, id));
-  // Las fotos se borran de forma explícita: sin esto quedarían filas apuntando a
-  // una receta inexistente.
-  await db.delete(recipePhotos).where(eq(recipePhotos.recipeId, id));
-  await db.delete(recipes).where(eq(recipes.id, id));
-
-  await registerDeletion("recipe", id, current[0].slug);
-  await bumpCatalogVersion();
+  if (!executor) return db.transaction((tx) => deleteRecipe(id, tx));
+  const [current] = await executor.select().from(recipes).where(eq(recipes.id, id)).limit(1).for("update");
+  if (!current) return false;
+  await executor.delete(recipeIngredients).where(eq(recipeIngredients.recipeId, id));
+  await executor.delete(recipeSteps).where(eq(recipeSteps.recipeId, id));
+  await executor.delete(recipeDietTags).where(eq(recipeDietTags.recipeId, id));
+  await executor.delete(recipeCollections).where(eq(recipeCollections.recipeId, id));
+  await executor.delete(recipePhotos).where(eq(recipePhotos.recipeId, id));
+  await executor.delete(recipes).where(eq(recipes.id, id));
+  await registerDeletion("recipe", id, current.slug, executor);
+  if (!deferCatalogVersion) await bumpCatalogVersion(executor, current.status === "published" ? -1 : 0);
+  return true;
 }
 
 /** Devuelve una receta en el formato que espera el editor del panel. */
@@ -622,6 +618,7 @@ export async function listRecipesForAdmin(options?: {
   const conditions = [];
   if (options?.status) conditions.push(eq(recipes.status, options.status));
   if (options?.search) conditions.push(like(recipes.title, `%${options.search}%`));
+  if (options?.collectionSlug) conditions.push(sql`EXISTS (SELECT 1 FROM recipeCollections rc INNER JOIN collections c ON c.id = rc.collectionId WHERE rc.recipeId = ${recipes.id} AND c.slug = ${options.collectionSlug})`);
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -669,7 +666,7 @@ export interface AdminCollectionInput {
   published?: boolean;
 }
 
-type CatalogTransaction = Parameters<Parameters<NonNullable<Awaited<ReturnType<typeof getDb>>>["transaction"]>[0]>[0];
+export type CatalogTransaction = Parameters<Parameters<NonNullable<Awaited<ReturnType<typeof getDb>>>["transaction"]>[0]>[0];
 
 /** Validación compartida: jamás persistir URLs temporales del navegador. */
 export function normalizeCollectionInput(input: AdminCollectionInput): AdminCollectionInput {

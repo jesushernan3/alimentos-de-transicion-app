@@ -266,49 +266,54 @@ export default function AccesoScreen() {
   }
 
   return (
-    <ScreenContainer edges={["top", "bottom", "left", "right"]}>
-      <Modal
-        visible={deviceLimitVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setDeviceLimitVisible(false)}
-      >
-        <View style={styles.dialogBackdrop}>
-          <View
-            style={[styles.dialog, { backgroundColor: colors.surface }]}
-            accessibilityViewIsModal
-          >
-            <Text
-              accessibilityRole="header"
-              style={[styles.title, { color: colors.foreground }]}
+    // El ajuste mide la pantalla completa; Safe Area queda dentro, sin offsets manuales.
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={
+        Platform.OS === "ios" ? "padding" : Platform.OS === "android" ? "height" : undefined
+      }
+    >
+      <ScreenContainer edges={["top", "bottom", "left", "right"]}>
+        <Modal
+          visible={deviceLimitVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setDeviceLimitVisible(false)}
+        >
+          <View style={styles.dialogBackdrop}>
+            <View
+              style={[styles.dialog, { backgroundColor: colors.surface }]}
+              accessibilityViewIsModal
             >
-              {DEVICE_LIMIT_FEEDBACK.title}
-            </Text>
-            <Text style={[styles.body, { color: colors.muted }]}>
-              {DEVICE_LIMIT_FEEDBACK.message}
-            </Text>
-            <AppButton
-              label="Ir a Ayuda"
-              onPress={() => {
-                setDeviceLimitVisible(false);
-                router.push("/soporte");
-              }}
-            />
-            <AppButton
-              label="Cancelar"
-              variant="secondary"
-              onPress={() => setDeviceLimitVisible(false)}
-            />
+              <Text
+                accessibilityRole="header"
+                style={[styles.title, { color: colors.foreground }]}
+              >
+                {DEVICE_LIMIT_FEEDBACK.title}
+              </Text>
+              <Text style={[styles.body, { color: colors.muted }]}>
+                {DEVICE_LIMIT_FEEDBACK.message}
+              </Text>
+              <AppButton
+                label="Ir a Ayuda"
+                onPress={() => {
+                  setDeviceLimitVisible(false);
+                  router.push("/soporte");
+                }}
+              />
+              <AppButton
+                label="Cancelar"
+                variant="secondary"
+                onPress={() => setDeviceLimitVisible(false)}
+              />
+            </View>
           </View>
-        </View>
-      </Modal>
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
+        </Modal>
         <ScrollView
+          style={styles.flex}
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.brand}>
@@ -473,8 +478,8 @@ export default function AccesoScreen() {
             </Pressable>
           </View>
         </ScrollView>
-      </KeyboardAvoidingView>
-    </ScreenContainer>
+      </ScreenContainer>
+    </KeyboardAvoidingView>
   );
 }
 

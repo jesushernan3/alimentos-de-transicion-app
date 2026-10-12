@@ -104,10 +104,27 @@ export async function getCatalogState(): Promise<SyncStateResult> {
  * recuento aquí evita que la aplicación tenga que contar recetas para saber si
  * hay novedades.
  */
-export async function bumpCatalogVersion(): Promise<number> {
-  const db = await getDb();
+export async function bumpCatalogVersion(executor?: NonNullable<Awaited<ReturnType<typeof getDb>>> | Parameters<Parameters<NonNullable<Awaited<ReturnType<typeof getDb>>>["transaction"]>[0]>[0], publishedDelta?: number): Promise<number> {
+  const db = executor ?? await getDb();
   if (!db) return 0;
-
+  if (!executor) return (db as NonNullable<Awaited<ReturnType<typeof getDb>>>).transaction((tx) => bumpCatalogVersion(tx));
+  // Cambios de estado y borrados conocen la diferencia exacta. Un incremento
+  // SQL no pisa el recuento que acaba de confirmar otro lote concurrente.
+  if (executor && publishedDelta !== undefined) {
+    const updated = await db.update(catalogState).set({
+      catalogVersion: sql`${catalogState.catalogVersion} + 1`,
+      publishedRecipes: sql`${catalogState.publishedRecipes} + ${publishedDelta}`,
+      lastChangeAt: new Date(),
+    }).where(eq(catalogState.id, 1));
+    if (Number(updated[0].affectedRows) > 0) {
+      const [state] = await db.select().from(catalogState).where(eq(catalogState.id, 1)).limit(1).for("update");
+      return state.catalogVersion;
+    }
+    // Sólo inicialización de una instalación que todavía no tenga singleton.
+  }
+  // El camino histórico de recuento adquiere el lock antes de su primera
+  // lectura consistente; los deltas de otros lotes se aplicarán después.
+  await db.execute(sql`SELECT id FROM catalogState WHERE id = 1 FOR UPDATE`);
   const countRows = await db
     .select({ total: sql<number>`count(*)` })
     .from(recipes)
@@ -461,8 +478,9 @@ export async function registerDeletion(
   entity: "recipe" | "collection" | "category" | "dietTag" | "ingredient",
   entityId: number,
   slug: string | null,
+  executor?: NonNullable<Awaited<ReturnType<typeof getDb>>> | Parameters<Parameters<NonNullable<Awaited<ReturnType<typeof getDb>>>["transaction"]>[0]>[0],
 ): Promise<void> {
-  const db = await getDb();
+  const db = executor ?? await getDb();
   if (!db) return;
   await db.insert(deletions).values({ entity, entityId, slug });
 }

@@ -100,6 +100,13 @@ export function isAuthenticated(req: Request): boolean {
   return verifyToken(readCookie(req, COOKIE_NAME));
 }
 
+/** Referencia diagnóstica; la contraseña compartida no identifica una persona. */
+export function adminAuditActor(req: Request): string {
+  const token = readCookie(req, COOKIE_NAME);
+  if (!verifyToken(token)) throw new Error("Sesión administrativa inválida.");
+  return `panel:${crypto.createHash("sha256").update(token!).digest("hex").slice(0, 24)}`;
+}
+
 /** Middleware que exige sesión activa para las rutas del panel. */
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   if (isAuthenticated(req)) {

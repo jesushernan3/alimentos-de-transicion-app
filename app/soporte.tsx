@@ -22,7 +22,7 @@ import { useCatalog } from "@/lib/catalog-context";
 import { trackEvent } from "@/lib/analytics";
 import { display } from "@/lib/typography";
 
-const SUPPORT_EMAIL = "info@alimentosdetransicion.com";
+const SUPPORT_EMAIL = "soporte@alimentosdetransicion.com";
 
 const FAQ = [
   {
