@@ -11,6 +11,7 @@ const mock = {
   signOut: vi.fn(), sync: vi.fn(), clearPhotos: vi.fn(), clearShopping: vi.fn(), clearHistory: vi.fn(),
   update: vi.fn(), rate: vi.fn(), alert: vi.fn(), openURL: vi.fn(), canOpenURL: vi.fn(),
   version: "9.8.7", missing: 3,
+  accessEmail: "restoration@example.test" as string | null, accessStatus: "active",
 };
 const palette = { primary: "#E78160", foreground: "#222", muted: "#777", border: "#ddd", surface: "#fff", surfaceAlt: "#faf5f0", error: "#c00", success: "#090", warning: "#b80" };
 const userData = () => ({ preferences: { theme: "automatico", units: "imperial", notifications: true }, updatePreferences: mock.update, clearShoppingList: mock.clearShopping, clearSearchHistory: mock.clearHistory, completeOnboarding: mock.completeOnboarding });
@@ -33,7 +34,7 @@ const imports: Record<string, unknown> = {
   "@/components/ui/app-icon": { AppIcon: host("icon") }, "./app-icon": { AppIcon: host("icon") },
   "@/components/ui/chip": { Chip: host("chip") },
   "@/hooks/use-colors": { useColors: () => palette },
-  "@/lib/access-context": { useAccess: () => ({ email: "restoration@example.test", status: "active", workingOffline: false, verifiedAt: "2026-10-11T00:00:00Z", signOut: mock.signOut }) },
+  "@/lib/access-context": { useAccess: () => ({ email: mock.accessEmail, status: mock.accessStatus, workingOffline: false, verifiedAt: "2026-10-11T00:00:00Z", signOut: mock.signOut }) },
   "@/lib/catalog-context": { useCatalog: catalog }, "@/lib/user-data-context": { useUserData: userData },
   "@/lib/rate-app": { openAppRating: mock.rate }, "@/lib/analytics": { trackEvent: vi.fn() },
   "@/lib/typography": { display: () => ({}) },
@@ -67,6 +68,7 @@ beforeEach(() => {
   mock.signOut.mockResolvedValue({ serverSessionRevoked: true });mock.completeOnboarding.mockResolvedValue(undefined);
   mock.rate.mockResolvedValue(true);mock.canOpenURL.mockResolvedValue(true);mock.openURL.mockResolvedValue(undefined);
   mock.version="9.8.7";mock.missing=3;
+  mock.accessEmail="restoration@example.test";mock.accessStatus="active";
 });
 afterEach(async () => { if (tree) await act(async () => tree!.unmount());tree=undefined; });
 
@@ -125,8 +127,42 @@ describe("FAQ y contacto", () => {
   it("contacto abre destinatario/asunto/espacio de usuario y diagnósticos correctos", async () => {
     await mount(Support);await press("Contactar a soporte");const url=new URL(mock.openURL.mock.calls[0][0]);expect(url.pathname).toBe("soporte@alimentosdetransicion.com");expect(url.searchParams.get("subject")).toBe("Soporte — Alimentos de Transición");const body=url.searchParams.get("body")!;expect(body.startsWith("[Contanos acá qué está pasando]")).toBe(true);for(const value of ["Correo de acceso: restoration@example.test","Estado: active","Recetas en el teléfono: 2","Última actualización: nunca","Última verificación:","Versión: 9.8.7","Sistema: android 34"])expect(body).toContain(value);expect(body).not.toContain("token");
   });
-  it("si no existe cliente de correo no intenta abrir una URL fallida", async () => {
-    mock.canOpenURL.mockResolvedValue(false);await mount(Support);await press("Contactar a soporte");expect(mock.openURL).not.toHaveBeenCalled();
+  it("falso negativo de canOpenURL en Android no impide abrir el correo", async () => {
+    mock.canOpenURL.mockResolvedValue(false);await mount(Support);await press("Contactar a soporte");
+    expect(mock.openURL).toHaveBeenCalledTimes(1);expect(mock.canOpenURL).not.toHaveBeenCalled();
+    expect(text()).not.toContain("No pudimos abrir");
+  });
+  it("si no hay cliente de correo muestra alternativa seleccionable sin error crudo", async () => {
+    mock.openURL.mockRejectedValue(new Error("Could not open URL mailto internal"));
+    await mount(Support);await press("Contactar a soporte");
+    expect(text()).toContain("No pudimos abrir una aplicación de correo");
+    expect(text()).toContain("webmail");expect(text()).not.toContain("Could not open URL");
+    const address=tree!.root.findAllByType("text" as React.ElementType)
+      .find(node=>node.props.accessibilityLabel==="Correo de soporte" && node.props.selectable)!;
+    expect(Boolean(address)).toBe(true);
+    expect(address.children).toEqual(["soporte@alimentosdetransicion.com"]);
+    expect(control("Contactar a soporte").props.disabled).toBe(false);
+  });
+  it("permite reintentar después de un fallo y retira la alternativa al abrir", async () => {
+    mock.openURL.mockRejectedValueOnce(new Error("sin correo"));
+    await mount(Support);await press("Contactar a soporte");expect(text()).toContain("No pudimos abrir");
+    await press("Contactar a soporte");expect(mock.openURL).toHaveBeenCalledTimes(2);
+    expect(text()).not.toContain("No pudimos abrir");
+  });
+  it("evita dos aperturas simultáneas y restaura botón al terminar", async () => {
+    let finish!:()=>void;mock.openURL.mockImplementation(()=>new Promise<void>(resolve=>{finish=resolve;}));
+    await mount(Support);const onPress=control("Contactar a soporte").props.onPress;
+    let opening!:Promise<void>;
+    await act(async()=>{opening=onPress();await onPress();});
+    expect(mock.openURL).toHaveBeenCalledTimes(1);expect(control("Abriendo correo…").props.disabled).toBe(true);
+    await act(async()=>{finish();await opening;});expect(control("Contactar a soporte").props.disabled).toBe(false);
+  });
+  it.each(["none","revoked"])("contacto sigue disponible sin acceso válido: %s", async status => {
+    mock.accessEmail=null;mock.accessStatus=status;
+    await mount(Support);await press("Contactar a soporte");
+    const body=new URL(mock.openURL.mock.calls[0][0]).searchParams.get("body")!;
+    expect(body).toContain("Correo de acceso: sin ingresar");expect(body).toContain(`Estado: ${status}`);
+    expect(mock.signOut).not.toHaveBeenCalled();expect(mock.sync).not.toHaveBeenCalled();
   });
 });
 

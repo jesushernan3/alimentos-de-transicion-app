@@ -649,8 +649,20 @@ Resultado: correo visible y mailto actualizados a soporte@alimentosdetransicion.
 - [x] Verificar repo/HEAD remoto y sesión Expo existentes.
 - [x] Integrar snapshot actual sanitizado preservando .gitignore remoto.
 - [x] Validar TypeScript/build/verificador y regresiones sobre copia de main.
-- [ ] Hacer commit y push normal; comprobar hash remoto.
-- [ ] Compilar APK preview con credenciales congeladas y caché limpia.
-- [ ] Verificar APK, firma idéntica, versión y backend; entregar enlace.
+- [x] Hacer commit y push normal; comprobar hash remoto.
+- [x] Compilar APK preview con credenciales congeladas y caché limpia.
+- [x] Verificar APK, firma idéntica, versión y backend; entregar enlace.
 
-Pre-push: TypeScript/build/verificar:proyecto aprobados; 42 suites herméticas/443 pruebas pasando. Runtime idéntico a WebDev f8fe81d8; .gitignore remoto conservado y copia pública sanitizada.
+GitHub main actualizado y verificado: d5117bf0a835ffb55ecbe47b88f51e5a8e89af73. TypeScript/build/verificar:proyecto y 42 suites/443 pruebas herméticas aprobados; runtime idéntico al checkout actual. APK pendiente de compilar/verificar.
+
+Resultado: commit/push main d5117bf0a835ffb55ecbe47b88f51e5a8e89af73 verificado; APK EAS preview a6d0a4b0-b7c4-4c9e-817f-8b34e3a9de33 FINISHED desde ese mismo commit. Binario /home/ubuntu/apk-validation/actualizacion-20261012/Alimentos-de-Transicion-prueba-1.0.3-4-d5117bf.apk completo, 1.0.3/4, com.alimentosdetransicion.app, backend producción. Certificado SHA-256 E28E629909E6217DE8C4B492AC4E059CFFD36E3E0D321D762A1F26C42B603B0A idéntico al anterior; EAS usó Build Credentials FKglJ9qGMb con freeze-credentials. Marcadores de correo soporte, teclado y funcionalidades acumuladas presentes; secretos configurados ausentes del bundle; RECORD_AUDIO/MODIFY_AUDIO_SETTINGS ausentes (el manifiesto incluye permisos transitivos de dependencias además de POST_NOTIFICATIONS). TypeScript/build/verificar:proyecto y 42 suites/443 pruebas herméticas aprobados. No AAB ni envío Play. Prueba física pendiente: instalar como actualización sin desinstalar para conservar datos y probar teclado email/OTP y Home.
+
+## Contacto soporte sin fallo silencioso — 12/10/2026
+
+- [x] Revisar Ayuda, enlaces del login, guardas públicas y manifiesto de la APK.
+- [x] Abrir mailto directamente sin depender de canOpenURL, manejar fallo y ofrecer correo seleccionable.
+- [x] Probar falso negativo Android, rechazo, reintento, encoding, doble toque y contacto sin sesión.
+- [x] Verificar rutas Ayuda del login/errores, TypeScript/build/verificar:proyecto y regresiones sin envíos reales.
+- [x] Guardar checkpoint sin APK/AAB, push ni modificaciones de backend/sesiones.
+
+Resultado: mailto se abre directamente sin el falso negativo de canOpenURL; rechazos muestran correo seleccionable e instrucciones para webmail, permiten reintento y no exponen errores crudos. Doble toque protegido. Navegación a Ayuda desde email/OTP, límite y revocación permanece pública y sin cambios. TypeScript/build/verificar:proyecto correctos; 81 pruebas herméticas pasando en 5 suites. No servidor/base/login alterados, no correos reales, APK/AAB ni push. APK instalada anterior no se actualiza con este checkpoint; validación física requiere una nueva APK.

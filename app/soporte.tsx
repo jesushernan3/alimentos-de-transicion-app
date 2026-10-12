@@ -9,7 +9,7 @@
 
 import Constants from "expo-constants";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { ScreenContainer } from "@/components/screen-container";
@@ -76,12 +76,19 @@ export default function SoporteScreen() {
   const { recipes, lastSyncAt } = useCatalog();
 
   const [expanded, setExpanded] = useState<number | null>(0);
+  const [contactBusy, setContactBusy] = useState(false);
+  const [contactFailed, setContactFailed] = useState(false);
+  const openingContact = useRef(false);
 
   useEffect(() => {
     trackEvent("support_open");
   }, []);
 
   async function handleContact() {
+    if (openingContact.current) return;
+    openingContact.current = true;
+    setContactBusy(true);
+    setContactFailed(false);
     // Los datos técnicos van en el cuerpo para no tener que pedírselos después.
     const diagnostics = [
       "",
@@ -100,8 +107,16 @@ export default function SoporteScreen() {
       "Soporte — Alimentos de Transición",
     )}&body=${encodeURIComponent(`[Contanos acá qué está pasando]\n${diagnostics}`)}`;
 
-    const canOpen = await Linking.canOpenURL(url);
-    if (canOpen) await Linking.openURL(url);
+    try {
+      // canOpenURL puede dar un falso negativo por la visibilidad de paquetes
+      // de Android. Intentar abrir el correo y tratar el fallo real, sin silenciarlo.
+      await Linking.openURL(url);
+    } catch {
+      setContactFailed(true);
+    } finally {
+      openingContact.current = false;
+      setContactBusy(false);
+    }
   }
 
   return (
@@ -159,7 +174,19 @@ export default function SoporteScreen() {
           <Text style={[styles.contactBody, { color: colors.muted }]}>
             Escribinos a {SUPPORT_EMAIL} y contanos qué problema estás teniendo. Para ayudarte más rápido, el mensaje incluye automáticamente algunos datos técnicos de la app y del dispositivo.
           </Text>
-          <AppButton label="Contactar a soporte" icon="mail" onPress={handleContact} />
+          <AppButton label={contactBusy ? "Abriendo correo…" : "Contactar a soporte"}
+            icon="mail" onPress={handleContact} disabled={contactBusy} />
+          {contactFailed && (
+            <View style={styles.contactFallback}>
+              <Text accessibilityRole="alert" style={[styles.contactBody, { color: colors.muted }]}>
+                No pudimos abrir una aplicación de correo. Podés copiar esta dirección y escribirnos desde el correo o webmail que uses. Mantenela presionada para seleccionarla y copiarla.
+              </Text>
+              <Text selectable accessibilityLabel="Correo de soporte"
+                style={[styles.contactBody, { color: colors.primary }]}>
+                {SUPPORT_EMAIL}
+              </Text>
+            </View>
+          )}
         </View>
       </ScrollView>
     </ScreenContainer>
@@ -215,5 +242,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 21,
     marginBottom: 4,
+  },
+  contactFallback: {
+    alignSelf: "stretch",
+    gap: 8,
+    marginTop: 8,
   },
 });
