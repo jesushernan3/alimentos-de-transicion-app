@@ -181,6 +181,7 @@ export default function RecipeDetailScreen() {
           <RecipeGallery
             photos={photos}
             fallbackUri={recipe.imageUrl ?? recipe.thumbUrl}
+            thumbnailUri={recipe.thumbUrl}
             height={320}
           />
           <View style={styles.heroActions}>

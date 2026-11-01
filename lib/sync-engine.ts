@@ -15,6 +15,7 @@
 
 import { trackEvent } from "./analytics";
 import { api } from "./api-client";
+import { catalogImagePlan } from "./catalog-image-plan";
 import { getConnectivity } from "./connectivity";
 import { prefetchInBackground } from "./image-cache";
 import { applyChanges, countRecipes, getSyncState } from "./local-db/catalog-store";
@@ -51,16 +52,21 @@ export interface SyncOutcome {
   /** Indica si era la primera descarga completa. */
   wasInitial: boolean;
   /**
-   * Fotos que no se pudieron guardar en el teléfono.
+   * Fotos que no se pudieron guardar en la etapa esperada por la sincronización.
    *
-   * Se informa explícitamente porque el recetario sirve para cocinar sin
-   * conexión: si faltan fotos, la persona debe poder saberlo y repararlo, en
-   * lugar de descubrirlo en la cocina con el teléfono en modo avión.
+   * En la primera descarga sólo incluye las miniaturas esenciales. Las portadas
+   * diferidas se verifican contra el caché desde Ajustes, sin bloquear el ingreso.
    */
   missingImages: number;
 }
 
 type ProgressListener = (progress: SyncProgress) => void;
+interface SyncOptions {
+  force?: boolean;
+  onProgress?: ProgressListener;
+  /** Aviso para refrescar el estado local al completar la tanda diferida. */
+  onImagesFinished?: () => void;
+}
 
 /** Evita que dos sincronizaciones simultáneas se pisen entre sí. */
 let running: Promise<SyncOutcome> | null = null;
@@ -78,7 +84,7 @@ export function isSyncRunning(): boolean {
  */
 export async function syncCatalog(
   token: string,
-  options: { force?: boolean; onProgress?: ProgressListener } = {},
+  options: SyncOptions = {},
 ): Promise<SyncOutcome> {
   if (running) return running;
 
@@ -91,7 +97,7 @@ export async function syncCatalog(
 
 async function performSync(
   token: string,
-  { force = false, onProgress }: { force?: boolean; onProgress?: ProgressListener },
+  { force = false, onProgress, onImagesFinished }: SyncOptions,
 ): Promise<SyncOutcome> {
   const report = (phase: SyncPhase, message: string, ratio: number | null, updated = 0) =>
     onProgress?.({ phase, message, ratio, updatedRecipes: updated });
@@ -156,40 +162,21 @@ async function performSync(
       recipeFormatVersion: data.recipeFormatVersion ?? 1,
     });
 
-    // Las imágenes se descargan después de guardar el texto: si la conexión se
-    // corta a mitad de camino, las recetas ya están disponibles y las fotos
-    // faltantes se completan en la siguiente pasada.
-    //
-    // Sólo se bajan la miniatura y la portada de cada receta. Las fotos
-    // secundarias de la galería quedan deliberadamente fuera: con ocho por
-    // receta, incluirlas multiplicaría por seis el peso de la descarga inicial
-    // para imágenes que quizá nunca se miren. Se traen al abrir la ficha.
-    const imageUrls = [
-      ...data.recipes.flatMap((recipe) => [recipe.thumbUrl, recipe.imageUrl]),
-      ...data.collections.map((collection) => collection.imageUrl),
-      ...data.categories.map((category) => category.imageUrl),
-    ];
+    // Primero se guardan textos y miniaturas. Las fotos secundarias de la
+    // galería quedan deliberadamente fuera y se traen al abrir la ficha.
+    const images = catalogImagePlan(data);
+    const awaitedUrls = wasInitial ? images.essential : images.all;
+    let missingImages = 0;
 
-    if (imageUrls.some(Boolean)) {
-      report("images", "Descargando las fotos de las recetas…", 0, updatedRecipes);
+    if (awaitedUrls.length > 0) {
+      report("images", wasInitial ? "Descargando las miniaturas…" : "Descargando las fotos de las recetas…", 0, updatedRecipes);
 
-      // Las miniaturas y las portadas van primero: son lo que se ve en los
-      // listados, así que la aplicación se percibe completa mucho antes de que
-      // terminen las fotos grandes de cada ficha.
-      const priorityUrls = [
-        ...data.recipes.map((recipe) => recipe.thumbUrl),
-        ...data.collections.map((collection) => collection.imageUrl),
-        ...data.categories.map((category) => category.imageUrl),
-      ];
-
-      // `prefetchInBackground` mantiene la descarga viva en el módulo: antes el
-      // trabajo se interrumpía al cambiar de pantalla y quedaban fotos a medias.
-      const photos = await prefetchInBackground(imageUrls, {
-        priority: priorityUrls,
+      const photos = await prefetchInBackground(awaitedUrls, {
+        priority: images.essential,
         onProgress: (done, total) => {
           report(
             "images",
-            `Descargando fotos (${done} de ${total})…`,
+            `${wasInitial ? "Guardando miniaturas" : "Descargando fotos"} (${done} de ${total})…`,
             total > 0 ? done / total : null,
             updatedRecipes,
           );
@@ -197,26 +184,32 @@ async function performSync(
       });
 
       if (photos.failed > 0) {
-        // El texto de las recetas ya está guardado, así que la sincronización no
-        // se considera fallida: se informa el faltante para que se pueda
-        // completar más tarde desde Ajustes.
         trackEvent("sync_images_incomplete", { failed: photos.failed, total: photos.total });
-
-        report("done", `Faltaron ${photos.failed} fotos`, 1, updatedRecipes);
-
-        return {
-          success: true,
-          error: null,
-          unauthorized: false,
-          updatedRecipes,
-          catalogVersion: data.catalogVersion,
-          wasInitial,
-          missingImages: photos.failed,
-        };
+        missingImages = photos.failed;
       }
     }
 
-    report("done", "Todo actualizado", 1, updatedRecipes);
+    if (wasInitial && images.deferred.length > 0) {
+      // No esperar esta promesa: reload y AccessGate habilitan el recetario tras
+      // la etapa esencial. La cola y el caché siguen vivos al cambiar de pantalla.
+      void prefetchInBackground(images.deferred, { concurrency: 2 }).then((photos) => {
+        if (photos.failed > 0) {
+          trackEvent("sync_images_incomplete", { failed: photos.failed, total: photos.total });
+        }
+        onImagesFinished?.();
+      }).catch(() => {
+        // Las imágenes pendientes no convierten textos ya guardados en un fallo.
+        // Se vuelven a detectar desde el catálogo local al abrir o reconectar.
+        trackEvent("sync_images_incomplete", { failed: images.deferred.length, total: images.deferred.length });
+        onImagesFinished?.();
+      });
+    }
+
+    report("done", missingImages > 0
+      ? `Recetario guardado; faltaron ${missingImages} imágenes`
+      : wasInitial && images.deferred.length > 0
+        ? "Recetario listo. Las fotos grandes siguen descargándose…"
+        : "Todo actualizado", 1, updatedRecipes);
     trackEvent("sync_complete", { updated: updatedRecipes, initial: wasInitial });
 
     return {
@@ -226,7 +219,7 @@ async function performSync(
       updatedRecipes,
       catalogVersion: data.catalogVersion,
       wasInitial,
-      missingImages: 0,
+      missingImages,
     };
   } catch (error) {
     if (isDeviceRevoked(error)) {

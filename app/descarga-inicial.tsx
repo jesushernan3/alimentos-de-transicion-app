@@ -40,7 +40,7 @@ export default function DescargaInicialScreen() {
         <Text style={[styles.body, { color: colors.muted }]}>
           {failed
             ? "Revisá tu conexión y volvé a intentarlo. Tu acceso ya quedó guardado en este teléfono."
-            : "Estamos guardando las recetas en tu teléfono para que después puedas cocinar sin conexión, incluso sin datos."}
+            : "Primero guardamos las recetas y las miniaturas para que puedas empezar. Las fotos grandes se completan mientras usás la app. Sin conexión vas a ver las imágenes que ya estén descargadas."}
         </Text>
 
         {!failed ? (
@@ -128,4 +128,3 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
 });
-

@@ -45,6 +45,9 @@ function cacheDirectory(): string {
 /** Índice en memoria: URL remota → ruta local ya verificada. */
 const memoryIndex = new Map<string, string>();
 
+/** Descargas activas por URL: getCachedImage y prefetch comparten el mismo trabajo. */
+const inFlightDownloads = new Map<string, Promise<string | null>>();
+
 let directoryReady = false;
 
 async function ensureDirectory(): Promise<boolean> {
@@ -103,7 +106,7 @@ async function localFileIsUsable(path: string): Promise<boolean> {
  * Devuelve `null` cuando no se pudo guardar, para que quien llame pueda contar
  * el fallo en lugar de creer que salió bien.
  */
-async function downloadToCache(absoluteUrl: string): Promise<string | null> {
+async function downloadToCacheUnshared(absoluteUrl: string): Promise<string | null> {
   const ready = await ensureDirectory();
   if (!ready) return null;
 
@@ -135,6 +138,24 @@ async function downloadToCache(absoluteUrl: string): Promise<string | null> {
   }
 
   return null;
+}
+
+/** Evita descargas simultáneas de la misma URL y la posible corrupción del archivo. */
+function downloadToCache(absoluteUrl: string): Promise<string | null> {
+  const ongoing = inFlightDownloads.get(absoluteUrl);
+  if (ongoing) return ongoing;
+
+  const operation = downloadToCacheUnshared(absoluteUrl);
+  inFlightDownloads.set(absoluteUrl, operation);
+
+  const clearIfCurrent = () => {
+    if (inFlightDownloads.get(absoluteUrl) === operation) {
+      inFlightDownloads.delete(absoluteUrl);
+    }
+  };
+  void operation.then(clearIfCurrent, clearIfCurrent);
+
+  return operation;
 }
 
 /**
@@ -187,6 +208,8 @@ export interface PrefetchResult {
 export interface PrefetchOptions {
   /** Se invoca con el avance de la descarga. */
   onProgress?: (done: number, total: number) => void;
+  /** Cantidad máxima de descargas simultáneas, entre 1 y 6. */
+  concurrency?: number;
   /**
    * Imágenes que deben descargarse primero.
    *
@@ -195,6 +218,13 @@ export interface PrefetchOptions {
    * fotos grandes de cada ficha sigan bajando.
    */
   priority?: (string | null)[];
+}
+
+function normalizeConcurrency(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
+    return 6;
+  }
+  return Math.min(6, Math.max(1, value));
 }
 
 /** Descarga una tanda de URLs y devuelve las que no se pudieron guardar. */
@@ -223,10 +253,9 @@ async function downloadBatched(
 /**
  * Descarga en bloque las imágenes del catálogo informando el progreso.
  *
- * Se usa durante la primera sincronización para que el contenido quede completo
- * antes de que la persona empiece a navegar sin conexión. A diferencia de una
- * versión anterior, devuelve un recuento verificado: quien llama puede saber si
- * el recetario quedó realmente completo o si conviene avisar.
+ * Se usa tanto para la etapa esencial (miniaturas) como para las fotos grandes
+ * diferidas. Devuelve el recuento verificado de la tanda solicitada, no una
+ * suposición de que todo el recetario ya está completo para uso sin conexión.
  */
 export async function prefetchImages(
   urls: (string | null)[],
@@ -253,7 +282,7 @@ export async function prefetchImages(
   if (!ready) return { total, stored: 0, failed: total };
 
   // Se descargan de a tandas para no saturar la red del dispositivo.
-  const BATCH = 6;
+  const BATCH = normalizeConcurrency(opts.concurrency);
   let done = 0;
   let stored = 0;
 
@@ -287,26 +316,35 @@ export async function prefetchImages(
  * descarga se lanzaba desde una pantalla y, al navegar, el trabajo en curso
  * quedaba interrumpido a mitad de camino. Manteniendo la promesa en el módulo,
  * la descarga continúa hasta terminar sin importar qué pantalla esté visible, y
- * dos llamadas simultáneas comparten el mismo trabajo en lugar de duplicarlo.
+ * las llamadas simultáneas se serializan y cada una conserva su propio resultado
+ * y callback de progreso.
  */
-let ongoingPrefetch: Promise<PrefetchResult> | null = null;
+let prefetchQueueTail: Promise<PrefetchResult> | null = null;
 
 export function prefetchInBackground(
   urls: (string | null)[],
   options?: PrefetchOptions,
 ): Promise<PrefetchResult> {
-  if (ongoingPrefetch) return ongoingPrefetch;
-
-  ongoingPrefetch = prefetchImages(urls, options).finally(() => {
-    ongoingPrefetch = null;
+  const previous = prefetchQueueTail;
+  const queued = (previous ?? Promise.resolve()).then(
+    () => prefetchImages(urls, options),
+    () => prefetchImages(urls, options),
+  );
+  const tracked = queued.finally(() => {
+    // Una llamada posterior puede haber ocupado ya el lugar de esta promesa.
+    // Sólo el último trabajo puede marcar la cola como inactiva.
+    if (prefetchQueueTail === tracked) {
+      prefetchQueueTail = null;
+    }
   });
+  prefetchQueueTail = tracked;
 
-  return ongoingPrefetch;
+  return tracked;
 }
 
 /** Indica si hay una descarga de fotos en curso. */
 export function isPrefetchRunning(): boolean {
-  return ongoingPrefetch !== null;
+  return prefetchQueueTail !== null;
 }
 
 /**
@@ -387,5 +425,6 @@ export async function clearImageCache(): Promise<void> {
 export function __resetImageCacheIndex(): void {
   memoryIndex.clear();
   directoryReady = false;
-  ongoingPrefetch = null;
+  inFlightDownloads.clear();
+  prefetchQueueTail = null;
 }

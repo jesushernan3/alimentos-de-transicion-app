@@ -9,7 +9,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const files = new Map<string, number>();
 const downloadOrder: string[] = [];
-let downloadDelay = 0;
+const downloadStarted = new Map<string, Deferred>();
+let activeDownloads = 0;
+let maxActiveDownloads = 0;
+let concurrencyReached: Deferred | null = null;
+let downloadBarrier: Deferred | null = null;
+
+type Deferred = {
+  promise: Promise<void>;
+  resolve: () => void;
+};
+
+function deferred(): Deferred {
+  let resolve!: () => void;
+  const promise = new Promise<void>((finish) => {
+    resolve = finish;
+  });
+  return { promise, resolve };
+}
 
 vi.mock("expo-file-system/legacy", () => ({
   documentDirectory: "file:///data/app/",
@@ -23,9 +40,17 @@ vi.mock("expo-file-system/legacy", () => ({
   makeDirectoryAsync: vi.fn(async () => undefined),
   downloadAsync: vi.fn(async (url: string, path: string) => {
     downloadOrder.push(url);
-    if (downloadDelay > 0) await new Promise((r) => setTimeout(r, downloadDelay));
-    files.set(path, 4096);
-    return { status: 200, uri: path };
+    activeDownloads += 1;
+    maxActiveDownloads = Math.max(maxActiveDownloads, activeDownloads);
+    downloadStarted.get(url)?.resolve();
+    if (concurrencyReached && activeDownloads >= 2) concurrencyReached.resolve();
+    try {
+      await downloadBarrier?.promise;
+      files.set(path, 4096);
+      return { status: 200, uri: path };
+    } finally {
+      activeDownloads -= 1;
+    }
   }),
   deleteAsync: vi.fn(async (path: string) => {
     files.delete(path);
@@ -50,7 +75,11 @@ describe("descarga de fotos del recetario", () => {
   beforeEach(() => {
     files.clear();
     downloadOrder.length = 0;
-    downloadDelay = 0;
+    downloadStarted.clear();
+    activeDownloads = 0;
+    maxActiveDownloads = 0;
+    concurrencyReached = null;
+    downloadBarrier = null;
     __resetImageCacheIndex();
   });
 
@@ -90,8 +119,41 @@ describe("descarga de fotos del recetario", () => {
     expect(avances).toEqual([1]);
   });
 
-  it("dos llamadas simultáneas comparten la misma descarga en lugar de duplicarla", async () => {
-    downloadDelay = 30;
+  it("serializa llamadas y no pierde las URLs de la segunda, con su propio progreso", async () => {
+    const firstUrl = "/manus-storage/primera.webp";
+    const secondUrl = "/manus-storage/segunda.webp";
+    const firstAbsolute = "https://servidor.test" + firstUrl;
+    const firstGate = deferred();
+    const firstStarted = deferred();
+    downloadBarrier = firstGate;
+    downloadStarted.set(firstAbsolute, firstStarted);
+    const firstProgress: number[] = [];
+    const secondProgress: number[] = [];
+
+    const primera = prefetchInBackground([firstUrl], {
+      onProgress: (done) => firstProgress.push(done),
+    });
+    await firstStarted.promise;
+
+    // La segunda petición queda en cola y no se pierde ni comparte el callback.
+    const segunda = prefetchInBackground([secondUrl], {
+      onProgress: (done) => secondProgress.push(done),
+    });
+    expect(secondProgress).toEqual([]);
+    expect(isPrefetchRunning()).toBe(true);
+
+    firstGate.resolve();
+    const [a, b] = await Promise.all([primera, segunda]);
+
+    expect(a).toEqual({ total: 1, stored: 1, failed: 0 });
+    expect(b).toEqual({ total: 1, stored: 1, failed: 0 });
+    expect(firstProgress).toEqual([1]);
+    expect(secondProgress).toEqual([1]);
+    expect(downloadOrder).toEqual([firstAbsolute, "https://servidor.test" + secondUrl]);
+    expect(isPrefetchRunning()).toBe(false);
+  });
+
+  it("dos llamadas con las mismas URLs no vuelven a descargar archivos persistidos", async () => {
     const urls = ["/manus-storage/x1.webp", "/manus-storage/x2.webp"];
 
     const primera = prefetchInBackground(urls);
@@ -107,7 +169,6 @@ describe("descarga de fotos del recetario", () => {
   });
 
   it("la descarga sobrevive a quien la inició: termina aunque no se espere el resultado", async () => {
-    downloadDelay = 20;
     const urls = ["/manus-storage/y1.webp", "/manus-storage/y2.webp", "/manus-storage/y3.webp"];
 
     // Se lanza sin esperar, como haría una pantalla que se cierra enseguida.
@@ -118,6 +179,52 @@ describe("descarga de fotos del recetario", () => {
 
     expect(result.stored).toBe(3);
     expect(isPrefetchRunning()).toBe(false);
+  });
+
+  it("recupera la cola cuando un trabajo rechaza y ejecuta el siguiente", async () => {
+    const firstError = new Error("callback falló");
+    const secondProgress: number[] = [];
+    const first = prefetchInBackground(["/manus-storage/rechazo.webp"], {
+      onProgress: () => {
+        throw firstError;
+      },
+    });
+    const second = prefetchInBackground(["/manus-storage/después-del-rechazo.webp"], {
+      onProgress: (done) => secondProgress.push(done),
+    });
+
+    await expect(first).rejects.toBe(firstError);
+    await expect(second).resolves.toEqual({ total: 1, stored: 1, failed: 0 });
+    expect(secondProgress).toEqual([1]);
+    expect(isPrefetchRunning()).toBe(false);
+  });
+
+  it("clampa concurrencia fuera de rango y usa el valor por defecto para no enteros", async () => {
+    const firstUrl = "https://servidor.test/manus-storage/solo-una.webp";
+    const firstGate = deferred();
+    const firstStarted = deferred();
+    downloadBarrier = firstGate;
+    downloadStarted.set(firstUrl, firstStarted);
+
+    const onlyOne = prefetchImages([firstUrl, "/manus-storage/no-debe-iniciar.webp"], {
+      concurrency: 0,
+    });
+    await firstStarted.promise;
+    expect(downloadOrder).toEqual([firstUrl]);
+    firstGate.resolve();
+    await onlyOne;
+
+    downloadBarrier = deferred();
+    concurrencyReached = deferred();
+    const sixAtMost = prefetchImages(
+      Array.from({ length: 7 }, (_, index) => `/manus-storage/invalid-${index}.webp`),
+      { concurrency: 1.5 },
+    );
+    await concurrencyReached.promise;
+    expect(maxActiveDownloads).toBe(6);
+    expect(downloadOrder.slice(-6)).toHaveLength(6);
+    downloadBarrier?.resolve();
+    await sixAtMost;
   });
 
   it("informa el faltante real cuando alguna descarga no se puede guardar", async () => {

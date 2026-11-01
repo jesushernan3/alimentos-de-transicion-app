@@ -666,3 +666,15 @@ Resultado: commit/push main d5117bf0a835ffb55ecbe47b88f51e5a8e89af73 verificado;
 - [x] Guardar checkpoint sin APK/AAB, push ni modificaciones de backend/sesiones.
 
 Resultado: mailto se abre directamente sin el falso negativo de canOpenURL; rechazos muestran correo seleccionable e instrucciones para webmail, permiten reintento y no exponen errores crudos. Doble toque protegido. Navegación a Ayuda desde email/OTP, límite y revocación permanece pública y sin cambios. TypeScript/build/verificar:proyecto correctos; 81 pruebas herméticas pasando en 5 suites. No servidor/base/login alterados, no correos reales, APK/AAB ni push. APK instalada anterior no se actualiza con este checkpoint; validación física requiere una nueva APK.
+
+## Inicio rápido del recetario — 31/10/2026
+
+- [x] Identificar la espera bloqueante de todas las fotos después de guardar textos.
+- [x] Separar miniaturas esenciales y portadas diferidas, excluyendo galería secundaria.
+- [x] Abrir recetario tras esenciales y mantener grandes sin bloquear navegación.
+- [x] Preservar caché/reanudación; evitar duplicados y omisiones concurrentes.
+- [x] Ajustar texto de descarga inicial sin rediseño.
+- [x] Probar con fotos grandes lentas, errores/offline y regresiones de navegación/acceso.
+- [x] TypeScript/build/verificar:proyecto, revisar alcance y preparar checkpoint sin APK/AAB.
+
+Resultado: la primera sincronización espera los textos y miniaturas/portadas de listados; la portada sustituye miniatura ausente. Las portadas grandes se completan con concurrencia 2 sin await. Caché persistente, cola serial sin perder URLs/callbacks y single-flight por URL compartido con fichas. Reanudación al abrir/reconectar desde datos locales, no depende de novedades del servidor. Ficha usa miniatura offline como respaldo de portada pendiente. Suscripción de red estable evita bucles por notificación inicial de NetInfo al refrescar el inventario. Sin cambios de estilos ni descargas iniciales de galerías secundarias. 218 pruebas en 19 archivos/suites relacionadas pasan, con FS/API/red simulados: motor real liberado con portadas detenidas, proveedor y AccessGate montados, reanudación, caché, galería y revocación. TypeScript/build/verificar:proyecto OK; export JavaScript Android validado, no build nativa. Comparados 101 archivos sensibles/fuera de alcance contra HEAD: backend, esquema, configuración, sesiones/dispositivos, datos locales, compuerta y Home idénticos. No correos, compras, SQL real, APK/AAB, push ni publicación. Falta medir espera en un Android físico y distribuir una nueva build: las promesas sobreviven a cambios de pantalla mientras la app está activa, no se promete ejecución si el sistema la cierra. Si se cierra, la siguiente apertura reanuda los faltantes.

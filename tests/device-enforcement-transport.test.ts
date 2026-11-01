@@ -10,6 +10,7 @@ vi.mock("@/lib/connectivity",()=>({getConnectivity:async()=>({isOnline:m.online}
 vi.mock("@/lib/installation-device",()=>({getInstallationDeviceMetadata:async()=>({deviceId:"test-device-uuid-12345"})}));
 vi.mock("@/lib/local-db/catalog-store",()=>({countRecipes:async()=>5,getSyncState:async()=>({lastSyncAt:null}),applyChanges:m.apply}));
 vi.mock("@/lib/image-cache",()=>({prefetchInBackground:m.prefetch}));
+vi.mock("@/lib/resolve-asset-url",()=>({resolveAssetUrl:(url?:string|null)=>url?.trim()||null}));
 vi.mock("@/lib/analytics",()=>({trackEvent:vi.fn()}));
 const {syncCatalog}=await import("../lib/sync-engine");
 beforeEach(()=>{m.pull.mockReset();m.apply.mockReset();m.prefetch.mockReset();m.online=true;});

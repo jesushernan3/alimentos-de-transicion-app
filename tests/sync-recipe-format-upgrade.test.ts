@@ -5,6 +5,7 @@ vi.mock("@/lib/connectivity",()=>({getConnectivity:async()=>({isOnline:m.online}
 vi.mock("@/lib/installation-device",()=>({getInstallationDeviceMetadata:async()=>({deviceId:"sync-format-fixture-device"})}));
 vi.mock("@/lib/local-db/catalog-store",()=>({countRecipes:async()=>5,getSyncState:async()=>({...m.state}),applyChanges:m.apply}));
 vi.mock("@/lib/image-cache",()=>({prefetchInBackground:m.prefetch}));
+vi.mock("@/lib/resolve-asset-url",()=>({resolveAssetUrl:(url?:string|null)=>url?.trim()||null}));
 vi.mock("@/lib/analytics",()=>({trackEvent:vi.fn()}));
 const {syncCatalog,hasRemoteUpdates}=await import("../lib/sync-engine");
 const data={serverTime:"2026-10-11T18:00:00.000Z",catalogVersion:10,full:true,recipes:[],ingredients:[],collections:[],categories:[],dietTags:[],deletions:[]};

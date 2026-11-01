@@ -119,16 +119,14 @@ describe("integración en la ficha", () => {
 
 describe("descarga inicial", () => {
   it("la sincronización sólo baja miniatura y portada", () => {
-    const bloque = sincronizacion.slice(
-      sincronizacion.indexOf("const imageUrls"),
-      sincronizacion.indexOf("if (imageUrls.some(Boolean))"),
-    );
-    expect(bloque).toMatch(/recipe\.thumbUrl, recipe\.imageUrl/);
-    // La clave del punto: las secundarias no entran en la descarga inicial.
-    expect(bloque).not.toMatch(/recipe\.photos/);
+    const plan = leer("lib/catalog-image-plan.ts");
+    expect(sincronizacion).toMatch(/catalogImagePlan\(data\)/);
+    expect(plan).toMatch(/recipe\.thumbUrl/);
+    expect(plan).toMatch(/recipe\.imageUrl/);
+    expect(plan).not.toMatch(/recipe\.photos/);
   });
 
   it("está documentado por qué las secundarias quedan fuera", () => {
-    expect(sincronizacion).toMatch(/secundarias de la galería quedan deliberadamente fuera/);
+    expect(sincronizacion).toMatch(/galería quedan deliberadamente fuera/);
   });
 });

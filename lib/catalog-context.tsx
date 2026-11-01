@@ -21,7 +21,8 @@ import type { DietTag, Ingredient, MealType, Recipe } from "@/data/types";
 
 import { useAccess } from "./access-context";
 import { trackEvent } from "./analytics";
-import { subscribeConnectivity } from "./connectivity";
+import { catalogImagePlan } from "./catalog-image-plan";
+import { getConnectivity, subscribeConnectivity } from "./connectivity";
 import { countMissingImages, isPrefetchRunning, prefetchInBackground } from "./image-cache";
 import {
   getAllCategories,
@@ -91,6 +92,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const [initialSyncRunning, setInitialSyncRunning] = useState(false);
 
   const didBootstrapSync = useRef(false);
+  const currentAccess = useRef({ token, accessState });
+  currentAccess.current = { token, accessState };
   useEffect(() => { if (accessState !== "signed-in") didBootstrapSync.current = false; }, [accessState]);
 
   /** Relee la base local y refresca el estado de la interfaz. */
@@ -126,6 +129,11 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       const outcome = await syncCatalog(token, {
         force,
         onProgress: (progress) => setSyncProgress(progress),
+        onImagesFinished: () => {
+          if (currentAccess.current.token !== token || currentAccess.current.accessState !== "signed-in") return;
+          // Actualiza también las comprobaciones de fotos offline de Ajustes.
+          void reload().catch(() => trackEvent("sync_error", { phase: "photos_status" }));
+        },
       });
 
       if (outcome.success) {
@@ -150,28 +158,25 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
    * La descarga vive en el módulo del caché, así que continúa aunque se cambie
    * de pantalla: ese era justamente el motivo por el que antes quedaban fotos a
    * medias, porque el trabajo se interrumpía al navegar.
-   */
+  */
   const resumeMissingPhotos = useCallback(async () => {
-    if (recipes.length === 0 || isPrefetchRunning()) return;
-
-    const urls = [
-      ...recipes.flatMap((recipe) => [recipe.thumbUrl, recipe.imageUrl]),
-      ...collections.map((collection) => collection.imageUrl),
-      ...categories.map((category) => category.imageUrl),
-    ];
-
-    const missing = await countMissingImages(urls);
-    if (missing === 0) return;
+    if (recipes.length === 0 || isPrefetchRunning() || !token || accessState !== "signed-in") return;
+    if (!(await getConnectivity()).isOnline) return;
+    const images = catalogImagePlan({ recipes, collections, categories });
+    const missing = await countMissingImages(images.all);
+    if (missing === 0 || currentAccess.current.token !== token || currentAccess.current.accessState !== "signed-in") return;
 
     trackEvent("photos_resume", { missing });
 
-    await prefetchInBackground(urls, {
-      priority: [
-        ...recipes.map((recipe) => recipe.thumbUrl),
-        ...collections.map((collection) => collection.imageUrl),
-      ],
+    await prefetchInBackground(images.all, {
+      priority: images.essential,
+      concurrency: 2,
     });
-  }, [recipes, collections, categories]);
+    if (currentAccess.current.token === token && currentAccess.current.accessState === "signed-in") await reload();
+  }, [recipes, collections, categories, token, accessState, reload]);
+
+  const latestResumeMissingPhotos = useRef(resumeMissingPhotos);
+  latestResumeMissingPhotos.current = resumeMissingPhotos;
 
   useEffect(() => {
     if (!ready || accessState !== "signed-in" || !token || didBootstrapSync.current) return;
@@ -194,7 +199,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       // Sin novedades en el servidor, puede haber fotos pendientes de una
       // descarga anterior interrumpida.
       await resumeMissingPhotos();
-    })();
+    })().catch(() => trackEvent("sync_error", { phase: "photos_resume" }));
   }, [ready, accessState, token, recipes.length, syncNow, resumeMissingPhotos]);
 
   /** Al recuperar la conexión se reintenta la descarga pendiente. */
@@ -212,9 +217,11 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       // Con contenido ya descargado, al volver la conexión se completan las
       // fotos que hubieran quedado pendientes. Antes había que pedirlo a mano
       // desde Ajustes, y quien no lo hacía se quedaba con recetas sin imagen.
-      void resumeMissingPhotos();
+      void latestResumeMissingPhotos.current().catch(() => trackEvent("sync_error", { phase: "photos_resume" }));
     });
-  }, [accessState, token, recipes.length, syncNow, resumeMissingPhotos]);
+  // NetInfo avisa inmediatamente al suscribirse. Mantener esta suscripción
+  // estable evita reintentos en bucle por el reload de las fotos completadas.
+  }, [accessState, token, recipes.length, syncNow]);
 
   const value = useMemo<CatalogContextValue>(() => {
     const recipesById = new Map(recipes.map((recipe) => [recipe.id, recipe]));

@@ -22,6 +22,22 @@ const responses = new Map<string, { status: number; size: number } | "throw">();
 /** Cantidad de intentos de descarga por URL, para verificar los reintentos. */
 const attempts = new Map<string, number>();
 
+type Deferred = {
+  promise: Promise<void>;
+  resolve: () => void;
+};
+
+function deferred(): Deferred {
+  let resolve!: () => void;
+  const promise = new Promise<void>((finish) => {
+    resolve = finish;
+  });
+  return { promise, resolve };
+}
+
+const downloadBarriers = new Map<string, Deferred>();
+const downloadStarted = new Map<string, Deferred>();
+
 vi.mock("expo-file-system/legacy", () => ({
   // Deliberadamente sin esquema: replica el caso que rompía en el dispositivo.
   documentDirectory: "/data/user/0/app/files/",
@@ -39,6 +55,9 @@ vi.mock("expo-file-system/legacy", () => ({
 
   downloadAsync: async (url: string, path: string) => {
     attempts.set(url, (attempts.get(url) ?? 0) + 1);
+    downloadStarted.get(url)?.resolve();
+
+    await downloadBarriers.get(url)?.promise;
 
     const planned = responses.get(url) ?? { status: 200, size: 40_000 };
     if (planned === "throw") throw new Error("network error");
@@ -98,6 +117,8 @@ beforeEach(async () => {
   directories.clear();
   responses.clear();
   attempts.clear();
+  downloadBarriers.clear();
+  downloadStarted.clear();
   __resetImageCacheIndex();
 });
 
@@ -119,6 +140,27 @@ describe("rutas del caché", () => {
 
     expect(second).toBe(first);
     expect(attempts.get("https://servidor.example" + url)).toBe(1);
+  });
+
+  it("comparte una descarga entre la ficha visible y el prefetch", async () => {
+    const url = "/manus-storage/catalog/thumb/simultanea.webp";
+    const absolute = "https://servidor.example" + url;
+    const gate = deferred();
+    const started = deferred();
+    downloadBarriers.set(absolute, gate);
+    downloadStarted.set(absolute, started);
+
+    const visible = getCachedImage(url);
+    await started.promise;
+    const background = prefetchImages([url]);
+
+    expect(attempts.get(absolute)).toBe(1);
+    gate.resolve();
+
+    const [visiblePath, result] = await Promise.all([visible, background]);
+    expect(result).toEqual({ total: 1, stored: 1, failed: 0 });
+    expect(visiblePath).toMatch(/^file:\/\//);
+    expect(attempts.get(absolute)).toBe(1);
   });
 
   it("descarta una ruta indexada cuyo archivo desapareció y vuelve a la URL remota", async () => {

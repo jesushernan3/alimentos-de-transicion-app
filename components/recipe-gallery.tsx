@@ -33,10 +33,12 @@ interface RecipeGalleryProps {
   photos: LocalRecipePhoto[];
   /** Portada de respaldo mientras la galería todavía no se leyó. */
   fallbackUri: string | null;
+  /** Miniatura disponible offline aunque la portada grande siga pendiente. */
+  thumbnailUri?: string | null;
   height: number;
 }
 
-export function RecipeGallery({ photos, fallbackUri, height }: RecipeGalleryProps) {
+export function RecipeGallery({ photos, fallbackUri, thumbnailUri, height }: RecipeGalleryProps) {
   const width = Dimensions.get("window").width;
   const [index, setIndex] = useState(0);
   const pedidas = useRef(false);
@@ -66,7 +68,7 @@ export function RecipeGallery({ photos, fallbackUri, height }: RecipeGalleryProp
   // Una sola foto: sin desplazamiento ni indicadores, como era antes.
   if (lista.length === 1) {
     return (
-      <CachedImage uri={lista[0].imageUrl} style={{ width: "100%", height }} transition={250} />
+      <CachedImage uri={lista[0].imageUrl} fallbackUri={thumbnailUri} style={{ width: "100%", height }} transition={250} />
     );
   }
 
@@ -89,6 +91,7 @@ export function RecipeGallery({ photos, fallbackUri, height }: RecipeGalleryProp
           <CachedImage
             key={photo.imageUrl}
             uri={photo.imageUrl}
+            fallbackUri={posicion === 0 ? thumbnailUri : photo.thumbUrl}
             style={{ width, height }}
             transition={posicion === 0 ? 250 : 180}
           />
