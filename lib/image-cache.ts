@@ -227,24 +227,29 @@ function normalizeConcurrency(value: number | undefined): number {
   return Math.min(6, Math.max(1, value));
 }
 
-/** Descarga una tanda de URLs y devuelve las que no se pudieron guardar. */
+/** Workers acotados: cada slot toma otra URL apenas termina, sin barreras por tanda. */
 async function downloadBatched(
   urls: string[],
   batchSize: number,
   onEach?: (stored: boolean) => void,
 ): Promise<string[]> {
   const failed: string[] = [];
-
-  for (let index = 0; index < urls.length; index += batchSize) {
-    const batch = urls.slice(index, index + batchSize);
-
-    await Promise.all(
-      batch.map(async (url) => {
-        const local = await downloadToCache(url);
-        if (!local) failed.push(url);
-        onEach?.(Boolean(local));
-      }),
-    );
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < urls.length) {
+      const url = urls[nextIndex++];
+      const local = await downloadToCache(url);
+      if (!local) failed.push(url);
+      onEach?.(Boolean(local));
+    }
+  };
+  // Drenar los workers incluso si un callback falla: la próxima solicitud de
+  // la cola no debe empezar mientras aún quedan workers de ésta descargando.
+  const results = await Promise.allSettled(
+    Array.from({ length: Math.min(batchSize, urls.length) }, worker),
+  );
+  for (const result of results) {
+    if (result.status === "rejected") throw result.reason;
   }
 
   return failed;
@@ -253,8 +258,8 @@ async function downloadBatched(
 /**
  * Descarga en bloque las imágenes del catálogo informando el progreso.
  *
- * Se usa tanto para la etapa esencial (miniaturas) como para las fotos grandes
- * diferidas. Devuelve el recuento verificado de la tanda solicitada, no una
+ * Se usa para miniaturas y fotos grandes progresivas. En el primer ingreso no
+ * bloquea la apertura. Devuelve el recuento verificado de la tanda, no una
  * suposición de que todo el recetario ya está completo para uso sin conexión.
  */
 export async function prefetchImages(
@@ -281,7 +286,7 @@ export async function prefetchImages(
   const ready = await ensureDirectory();
   if (!ready) return { total, stored: 0, failed: total };
 
-  // Se descargan de a tandas para no saturar la red del dispositivo.
+  // Concurrencia acotada para no saturar la red del dispositivo.
   const BATCH = normalizeConcurrency(opts.concurrency);
   let done = 0;
   let stored = 0;

@@ -68,7 +68,8 @@ describe("consulta de fotos", () => {
 
   it("las fotos se reescriben enteras en cada sincronización", () => {
     // Reconciliar altas y bajas parciales dejaría fotos borradas en el teléfono.
-    expect(almacen).toMatch(/DELETE FROM recipe_photos WHERE recipeSlug = \?/);
+    expect(almacen).toMatch(/DELETE FROM recipe_photos WHERE recipeSlug IN \(/);
+    expect(almacen).toMatch(/runDeleteInBatches\([\s\S]*?plan\.recipeSlugs/);
   });
 });
 
@@ -127,6 +128,6 @@ describe("descarga inicial", () => {
   });
 
   it("está documentado por qué las secundarias quedan fuera", () => {
-    expect(sincronizacion).toMatch(/galería quedan deliberadamente fuera/);
+    expect(sincronizacion).toMatch(/de galería siguen fuera del plan/);
   });
 });

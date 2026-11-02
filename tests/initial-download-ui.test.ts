@@ -39,11 +39,19 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => { tree?.unmount(); tree = null; }); });
 
 describe("pantalla y respaldo offline del inicio rápido", () => {
-  it("explica la etapa esencial y que las grandes se completan después", async () => {
+  it("explica que sólo los textos bloquean y las miniaturas se completan después", async () => {
     await mount(React.createElement(DownloadScreen));
-    expect(text()).toContain("Primero guardamos las recetas y las miniaturas");
-    expect(text()).toContain("Las fotos grandes se completan mientras usás la app");
+    expect(text()).toContain("Primero guardamos las recetas para que puedas empezar");
+    expect(text()).toContain("Las miniaturas y las fotos se completan mientras usás la app");
     expect(text()).toContain("imágenes que ya estén descargadas");
+  });
+
+  it("muestra el porcentaje real enviado por el guardado por lotes", async () => {
+    m.progress = { phase: "saving", message: "Guardando en tu teléfono… (50%)", ratio: 0.5 };
+    await mount(React.createElement(DownloadScreen));
+    expect(text()).toContain("Guardando en tu teléfono… (50%)");
+    const views = tree!.root.findAllByType("mock-view" as React.ElementType);
+    expect(views.some(view => Array.isArray(view.props.style) && view.props.style.some((style: { width?: string }) => style?.width === "50%"))).toBe(true);
   });
 
   it("conserva el botón Reintentar ante un fallo de sincronización", async () => {

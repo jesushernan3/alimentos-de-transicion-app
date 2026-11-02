@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const files = new Map<string, number>();
 const downloadOrder: string[] = [];
 const downloadStarted = new Map<string, Deferred>();
+const downloadGates = new Map<string, Deferred>();
 let activeDownloads = 0;
 let maxActiveDownloads = 0;
 let concurrencyReached: Deferred | null = null;
@@ -45,6 +46,7 @@ vi.mock("expo-file-system/legacy", () => ({
     downloadStarted.get(url)?.resolve();
     if (concurrencyReached && activeDownloads >= 2) concurrencyReached.resolve();
     try {
+      await downloadGates.get(url)?.promise;
       await downloadBarrier?.promise;
       files.set(path, 4096);
       return { status: 200, uri: path };
@@ -76,6 +78,7 @@ describe("descarga de fotos del recetario", () => {
     files.clear();
     downloadOrder.length = 0;
     downloadStarted.clear();
+    downloadGates.clear();
     activeDownloads = 0;
     maxActiveDownloads = 0;
     concurrencyReached = null;
@@ -106,6 +109,40 @@ describe("descarga de fotos del recetario", () => {
     expect(result.total).toBe(1);
     expect(result.stored).toBe(1);
     expect(downloadOrder).toHaveLength(1);
+  });
+
+  it("una miniatura lenta no retiene los slots libres ni impide descargar las siguientes", async () => {
+    const slow = "https://servidor.test/manus-storage/lenta.webp";
+    const gate = deferred(); downloadGates.set(slow, gate);
+    const progress: number[] = [];
+    const job = prefetchImages([slow, "/manus-storage/rapida.webp", "/manus-storage/siguiente.webp"], {
+      concurrency: 2, onProgress: done => progress.push(done),
+    });
+    try {
+      await vi.waitFor(() => expect(downloadOrder).toContain("https://servidor.test/manus-storage/siguiente.webp"));
+      expect(progress).toEqual([1, 2]); expect(activeDownloads).toBe(1);
+      expect(maxActiveDownloads).toBeLessThanOrEqual(2);
+    } finally { gate.resolve(); }
+    expect(await job).toEqual({ total: 3, stored: 3, failed: 0 });
+    expect(progress).toEqual([1, 2, 3]);
+  });
+
+  it("la cola drena los workers activos cuando un callback falla antes de iniciar el siguiente trabajo", async () => {
+    const slow = "https://servidor.test/manus-storage/activa.webp";
+    const gate = deferred(); downloadGates.set(slow, gate);
+    const error = new Error("callback de prueba");
+    const first = prefetchInBackground([slow, "/manus-storage/error-callback.webp"], {
+      concurrency: 2, onProgress: () => { throw error; },
+    });
+    const firstResult = first.catch(value => value);
+    const second = prefetchInBackground(["/manus-storage/trabajo-posterior.webp"]);
+    try {
+      await vi.waitFor(() => expect(downloadOrder).toContain("https://servidor.test/manus-storage/error-callback.webp"));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(downloadOrder).not.toContain("https://servidor.test/manus-storage/trabajo-posterior.webp");
+    } finally { gate.resolve(); }
+    expect(await firstResult).toBe(error);
+    expect(await second).toEqual({ total: 1, stored: 1, failed: 0 });
   });
 
   it("acepta la forma antigua con función de progreso", async () => {

@@ -77,8 +77,8 @@ afterEach(async () => {
   });
 });
 
-describe("catálogo listo antes de portadas grandes", () => {
-  it("la compuerta abre Home sólo tras las miniaturas sin esperar la portada", async () => {
+describe("catálogo listo con miniaturas progresivas", () => {
+  it("la compuerta abre Home tras textos sin esperar miniaturas ni portada", async () => {
     const essential = deferred(); const large = deferred();
     m.prefetch.mockImplementation((urls: string[]) => {
       if (urls.includes("/cover.webp")) {
@@ -88,16 +88,33 @@ describe("catálogo listo antes de portadas grandes", () => {
       return essential.promise;
     });
     await mount(); await drain();
-    expect(m.apply).toHaveBeenCalledOnce(); expect(catalog.hasContent).toBe(false);
-    expect(catalog.initialSyncRunning).toBe(true); expect(m.replace).not.toHaveBeenCalledWith("/(tabs)");
-    await act(async () => { essential.resolve({ total: 1, stored: 1, failed: 0 }); }); await drain();
+    expect(m.apply).toHaveBeenCalledOnce();
     expect(catalog.hasContent).toBe(true); expect(catalog.initialSyncRunning).toBe(false);
     expect(m.replace).toHaveBeenCalledWith("/(tabs)"); expect(m.lastBackground).not.toBeNull();
+    expect(m.cached.has("/thumb.webp")).toBe(false);
     expect(m.prefetch.mock.calls[0][0]).toEqual(["/thumb.webp"]);
+    expect(m.prefetch.mock.calls[0][1]).toEqual({ priority: ["/thumb.webp"] });
     expect(m.prefetch.mock.calls[1]).toEqual([["/cover.webp"], { concurrency: 2 }]);
     const before = m.reads.mock.calls.length;
+    await act(async () => { essential.resolve({ total: 1, stored: 1, failed: 0 }); }); await drain();
+    expect(catalog.hasContent).toBe(true); expect(m.lastBackground).not.toBeNull();
     await act(async () => { large.resolve({ total: 1, stored: 1, failed: 0 }); }); await drain();
     expect(m.reads.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it("no habilita Home ni inicia miniaturas hasta confirmar el guardado local", async () => {
+    const committed = deferred();
+    m.apply.mockImplementation(async input => {
+      await committed.promise;
+      m.recipes = input.recipes;
+      m.state = { lastSyncAt: input.serverTime, lastSuccessAt: input.serverTime, catalogVersion: input.catalogVersion, recipeFormatVersion: 2 };
+    });
+    await mount(); await drain();
+    expect(catalog.hasContent).toBe(false); expect(catalog.initialSyncRunning).toBe(true);
+    expect(m.prefetch).not.toHaveBeenCalled(); expect(m.replace).not.toHaveBeenCalledWith("/(tabs)");
+    await act(async () => { committed.resolve({ total: 0, stored: 0, failed: 0 }); }); await drain();
+    expect(catalog.hasContent).toBe(true); expect(catalog.initialSyncRunning).toBe(false);
+    expect(m.replace).toHaveBeenCalledWith("/(tabs)");
   });
 
   it("al reabrir con contenido retoma fotos sin volver a pedir el catálogo completo", async () => {

@@ -83,25 +83,24 @@ afterEach(async () => {
 });
 
  describe("inicio rápido con motor y caché reales", () => {
-  it("guarda textos antes de imágenes y libera el sync al terminar miniaturas, con la portada todavía detenida", async () => {
+  it("libera el sync tras textos aun con miniatura detenida y mantiene portadas detrás de miniaturas", async () => {
     const thumb = barrier("/thumb.webp"); const cover = barrier("/cover.webp");
     const progress = vi.fn(); const completed = vi.fn();
-    let settled = false;
-    const job = start({ onProgress: progress, onImagesFinished: completed }).then(result => { settled = true; return result; });
+    const job = start({ onProgress: progress, onImagesFinished: completed });
+    expect(await job).toMatchObject({ success: true, wasInitial: true, missingImages: 0 });
     await vi.waitFor(() => expect(m.downloads).toContain("https://server.test/thumb.webp"));
     expect(m.applied).toBe(true); expect(m.count).toBe(1);
-    expect(settled).toBe(false); expect(m.downloads).not.toContain("https://server.test/cover.webp");
-    thumb.resolve();
-    await vi.waitFor(() => expect(settled).toBe(true));
-    expect(await job).toMatchObject({ success: true, wasInitial: true, missingImages: 0 });
+    expect(m.downloads).not.toContain("https://server.test/cover.webp");
     expect(isSyncRunning()).toBe(false);
+    expect(await countMissingImages(["/thumb.webp"])).toBe(1);
+    const reportsAtEntry = progress.mock.calls.length;
+    thumb.resolve();
     await vi.waitFor(() => expect(m.downloads).toContain("https://server.test/cover.webp"));
     expect(isPrefetchRunning()).toBe(true); expect(completed).not.toHaveBeenCalled();
     expect(await countMissingImages(["/thumb.webp", "/collection.webp", "/category.webp"])).toBe(0);
     expect(await countMissingImages(["/cover.webp"])).toBe(1);
     expect(progress.mock.calls.at(-1)?.[0]).toMatchObject({ phase: "done" });
-    expect(progress.mock.calls.at(-1)?.[0].message).toContain("fotos grandes");
-    const reportsAtEntry = progress.mock.calls.length;
+    expect(progress.mock.calls.at(-1)?.[0].message).toContain("imágenes");
     cover.resolve();
     await vi.waitFor(() => expect(completed).toHaveBeenCalledOnce());
     expect(await countMissingImages(["/cover.webp"])).toBe(0);
@@ -114,13 +113,14 @@ afterEach(async () => {
     expect(m.downloads).toEqual([]); expect(isPrefetchRunning()).toBe(false);
   });
 
-  it("sin miniatura usa la portada en la etapa esencial y no la vuelve a descargar", async () => {
+  it("sin miniatura descarga la portada como respaldo sin bloquear y no la duplica", async () => {
     m.pull.mockResolvedValue({ authorized: true, data: data([{ slug: "legacy", thumbUrl: "  ", imageUrl: "/legacy.webp" }]) });
-    const full = barrier("/legacy.webp"); let settled = false;
-    const job = start().then(result => { settled = true; return result; });
-    await vi.waitFor(() => expect(m.downloads).toContain("https://server.test/legacy.webp"));
-    expect(settled).toBe(false); full.resolve();
+    const full = barrier("/legacy.webp");
+    const job = start();
     expect(await job).toMatchObject({ success: true });
+    await vi.waitFor(() => expect(m.downloads).toContain("https://server.test/legacy.webp"));
+    expect(await countMissingImages(["/legacy.webp"])).toBe(1);
+    full.resolve();
     expect(m.downloads.filter(url => url.endsWith("/legacy.webp"))).toHaveLength(1);
   });
 
@@ -173,6 +173,35 @@ afterEach(async () => {
     m.apply.mockRejectedValue(new Error("transaction rolled back"));
     expect(await start()).toMatchObject({ success: false });
     expect(m.count).toBe(0); expect(m.downloads).toEqual([]);
+  });
+
+  it("espera el guardado completo y comunica su progreso real antes de iniciar imágenes", async () => {
+    let commit!: () => void;
+    const committed = new Promise<void>(resolve => { commit = resolve; });
+    m.apply.mockImplementation(async (_input, options) => {
+      options.onProgress({ completed: 0, total: 20 });
+      options.onProgress({ completed: 10, total: 20 });
+      await committed;
+      m.applied = true; m.count = 1;
+      options.onProgress({ completed: 20, total: 20 });
+    });
+    const progress = vi.fn(); let settled = false;
+    const job = start({ onProgress: progress }).then(result => { settled = true; return result; });
+    await vi.waitFor(() => expect(progress).toHaveBeenCalledWith(expect.objectContaining({ phase: "saving", ratio: 0.5 })));
+    expect(settled).toBe(false); expect(m.applied).toBe(false); expect(m.downloads).toEqual([]);
+    commit();
+    expect(await job).toMatchObject({ success: true });
+    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ phase: "saving", ratio: 1 }));
+  });
+
+  it("miniaturas fallidas no invalidan textos y permanecen pendientes para reanudar", async () => {
+    const thumb = barrier("/thumb.webp"); const completed = vi.fn();
+    expect(await start({ onImagesFinished: completed })).toMatchObject({ success: true });
+    await vi.waitFor(() => expect(m.downloads).toContain("https://server.test/thumb.webp"));
+    m.online = false; thumb.resolve();
+    await vi.waitFor(() => expect(completed).toHaveBeenCalledOnce());
+    expect(m.count).toBe(1); expect(await countMissingImages(["/thumb.webp"])).toBe(1);
+    expect(m.track).toHaveBeenCalledWith("sync_images_incomplete", expect.objectContaining({ failed: expect.any(Number) }));
   });
 
   it("sin conexión no borra ni modifica el catálogo ni inicia imágenes", async () => {

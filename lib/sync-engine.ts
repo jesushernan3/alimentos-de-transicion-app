@@ -54,8 +54,8 @@ export interface SyncOutcome {
   /**
    * Fotos que no se pudieron guardar en la etapa esperada por la sincronización.
    *
-   * En la primera descarga sólo incluye las miniaturas esenciales. Las portadas
-   * diferidas se verifican contra el caché desde Ajustes, sin bloquear el ingreso.
+   * La primera descarga no espera imágenes: los faltantes se verifican contra
+   * el caché desde Ajustes. Un texto guardado no implica todas las fotos offline.
    */
   missingImages: number;
 }
@@ -160,12 +160,18 @@ async function performSync(
       catalogVersion: data.catalogVersion,
       serverTime: data.serverTime,
       recipeFormatVersion: data.recipeFormatVersion ?? 1,
+    }, {
+      onProgress: ({ completed, total }) => {
+        const ratio = total > 0 ? completed / total : 0;
+        report("saving", `Guardando en tu teléfono… (${Math.round(ratio * 100)}%)`, ratio, updatedRecipes);
+      },
     });
 
-    // Primero se guardan textos y miniaturas. Las fotos secundarias de la
-    // galería quedan deliberadamente fuera y se traen al abrir la ficha.
+    // El commit de todos los textos ya terminó. En el primer ingreso ninguna
+    // imagen bloquea la lectura local ni la navegación. Las fotos secundarias
+    // de galería siguen fuera del plan y se descargan al abrir la ficha.
     const images = catalogImagePlan(data);
-    const awaitedUrls = wasInitial ? images.essential : images.all;
+    const awaitedUrls = wasInitial ? [] : images.all;
     let missingImages = 0;
 
     if (awaitedUrls.length > 0) {
@@ -189,26 +195,34 @@ async function performSync(
       }
     }
 
-    if (wasInitial && images.deferred.length > 0) {
-      // No esperar esta promesa: reload y AccessGate habilitan el recetario tras
-      // la etapa esencial. La cola y el caché siguen vivos al cambiar de pantalla.
-      void prefetchInBackground(images.deferred, { concurrency: 2 }).then((photos) => {
-        if (photos.failed > 0) {
-          trackEvent("sync_images_incomplete", { failed: photos.failed, total: photos.total });
-        }
-        onImagesFinished?.();
-      }).catch(() => {
-        // Las imágenes pendientes no convierten textos ya guardados en un fallo.
-        // Se vuelven a detectar desde el catálogo local al abrir o reconectar.
-        trackEvent("sync_images_incomplete", { failed: images.deferred.length, total: images.deferred.length });
-        onImagesFinished?.();
+    if (wasInitial && images.all.length > 0) {
+      const schedule = (urls: string[], options: Parameters<typeof prefetchInBackground>[1]) =>
+        prefetchInBackground(urls, options).then((photos) => {
+          if (photos.failed > 0) {
+            trackEvent("sync_images_incomplete", { failed: photos.failed, total: photos.total });
+          }
+        }).catch(() => {
+          // Reanudación por caché al abrir/reconectar, sin invalidar los textos.
+          trackEvent("sync_images_incomplete", { failed: urls.length, total: urls.length });
+        });
+      const jobs: Promise<void>[] = [];
+      if (images.essential.length > 0) {
+        jobs.push(schedule(images.essential, { priority: images.essential }));
+      }
+      // La cola conserva este orden: miniaturas antes de las portadas grandes.
+      if (images.deferred.length > 0) {
+        jobs.push(schedule(images.deferred, { concurrency: 2 }));
+      }
+      void Promise.all(jobs).then(() => onImagesFinished?.()).catch(() => {
+        // Un fallo del refresco de inventario tampoco convierte el sync en error.
+        trackEvent("sync_error", { phase: "photos_status" });
       });
     }
 
     report("done", missingImages > 0
       ? `Recetario guardado; faltaron ${missingImages} imágenes`
-      : wasInitial && images.deferred.length > 0
-        ? "Recetario listo. Las fotos grandes siguen descargándose…"
+      : wasInitial && images.all.length > 0
+        ? "Recetario listo. Las imágenes se completan mientras usás la app…"
         : "Todo actualizado", 1, updatedRecipes);
     trackEvent("sync_complete", { updated: updatedRecipes, initial: wasInitial });
 

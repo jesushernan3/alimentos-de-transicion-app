@@ -34,6 +34,13 @@ import type {
 import { normalizeImageUrl } from "@/lib/resolve-asset-url";
 
 import { getLocalDb } from "./database";
+import {
+  chunkRows,
+  inPlaceholders,
+  lastByKey,
+  maxBatchRows,
+  rowPlaceholders,
+} from "./catalog-batch";
 import * as webFallback from "./web-fallback";
 
 const isWeb = Platform.OS === "web";
@@ -71,240 +78,115 @@ export interface ApplyChangesInput {
   recipeFormatVersion?: number;
 }
 
+export interface ApplyChangesOptions {
+  onProgress?: (progress: { completed: number; total: number }) => void;
+}
+
 /** Escribe en la base local el lote de cambios recibido del servidor. */
-export async function applyChanges(input: ApplyChangesInput): Promise<void> {
+export async function applyChanges(
+  input: ApplyChangesInput,
+  options: ApplyChangesOptions = {},
+): Promise<void> {
   if (isWeb) return webFallback.applyChanges(input);
 
   const db = await getLocalDb();
+  const plan = buildCatalogBatchPlan(input);
+  const total = plan.totalOperations;
+
+  // El progreso intermedio es observacional: puede reflejar trabajo que luego
+  // revierte, pero nunca anuncia 100% hasta que withTransactionAsync confirme.
+  reportProgress(options.onProgress, 0, total);
 
   await db.withTransactionAsync(async () => {
-    for (const ingredient of input.ingredients) {
-      await db.runAsync(
-        `INSERT INTO ingredients (slug, name, pantryCategory, defaultUnit)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(slug) DO UPDATE SET
-           name = excluded.name,
-           pantryCategory = excluded.pantryCategory,
-           defaultUnit = excluded.defaultUnit`,
-        [ingredient.slug, ingredient.name, ingredient.pantryCategory, ingredient.defaultUnit],
-      );
-    }
+    let completed = 0;
+    const markCompleted = () => {
+      completed += 1;
+      if (completed < total) reportProgress(options.onProgress, completed, total);
+    };
 
-    for (const category of input.categories) {
-      await db.runAsync(
-        `INSERT INTO categories (slug, name, description, imageUrl, icon, sortOrder, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(slug) DO UPDATE SET
-           name = excluded.name, description = excluded.description,
-           imageUrl = excluded.imageUrl, icon = excluded.icon,
-           sortOrder = excluded.sortOrder, updatedAt = excluded.updatedAt`,
-        [
-          category.slug,
-          category.name,
-          category.description,
-          category.imageUrl,
-          category.icon,
-          category.sortOrder,
-          category.updatedAt,
-        ],
-      );
-    }
+    await runInsertBatches(db, plan.ingredientRows, 4, ingredientInsertSql, markCompleted);
+    await runInsertBatches(db, plan.categoryRows, 7, categoryInsertSql, markCompleted);
+    await runInsertBatches(db, plan.dietTagRows, 5, dietTagInsertSql, markCompleted);
+    await runInsertBatches(db, plan.collectionRows, 8, collectionInsertSql, markCompleted);
+    await runInsertBatches(db, plan.recipeRows, 18, recipeInsertSql, markCompleted);
 
-    for (const tag of input.dietTags) {
-      await db.runAsync(
-        `INSERT INTO diet_tags (slug, name, description, sortOrder, updatedAt)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(slug) DO UPDATE SET
-           name = excluded.name, description = excluded.description,
-           sortOrder = excluded.sortOrder, updatedAt = excluded.updatedAt`,
-        [tag.slug, tag.name, tag.description, tag.sortOrder, tag.updatedAt],
-      );
-    }
+    await runDeleteInBatches(
+      db,
+      plan.recipeSlugs,
+      "DELETE FROM recipe_ingredients WHERE recipeSlug IN (",
+      markCompleted,
+    );
+    await runDeleteInBatches(
+      db,
+      plan.recipeSlugs,
+      "DELETE FROM recipe_steps WHERE recipeSlug IN (",
+      markCompleted,
+    );
+    await runDeleteInBatches(
+      db,
+      plan.recipeSlugs,
+      "DELETE FROM recipe_diet_tags WHERE recipeSlug IN (",
+      markCompleted,
+    );
+    await runDeleteInBatches(
+      db,
+      plan.recipeSlugs,
+      "DELETE FROM recipe_collections WHERE recipeSlug IN (",
+      markCompleted,
+    );
+    await runDeleteInBatches(
+      db,
+      plan.recipeSlugs,
+      "DELETE FROM recipe_photos WHERE recipeSlug IN (",
+      markCompleted,
+    );
 
-    for (const collection of input.collections) {
-      await db.runAsync(
-        `INSERT INTO collections (slug, name, tagline, description, imageUrl, accentColor, sortOrder, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(slug) DO UPDATE SET
-           name = excluded.name, tagline = excluded.tagline,
-           description = excluded.description, imageUrl = excluded.imageUrl,
-           accentColor = excluded.accentColor, sortOrder = excluded.sortOrder,
-           updatedAt = excluded.updatedAt`,
-        [
-          collection.slug,
-          collection.name,
-          collection.tagline,
-          collection.description,
-          collection.imageUrl,
-          collection.accentColor,
-          collection.sortOrder,
-          collection.updatedAt,
-        ],
-      );
-    }
+    await runInsertBatches(db, plan.photoRows, 6, photoInsertSql, markCompleted);
+    await runInsertBatches(db, plan.recipeIngredientRows, 8, recipeIngredientInsertSql, markCompleted);
+    await runInsertBatches(db, plan.recipeStepRows, 7, recipeStepInsertSql, markCompleted);
+    await runInsertBatches(db, plan.recipeDietRows, 2, recipeDietInsertSql, markCompleted);
+    await runInsertBatches(db, plan.recipeCollectionRows, 3, recipeCollectionInsertSql, markCompleted);
 
-    for (const recipe of input.recipes) {
-      await db.runAsync(
-        `INSERT INTO recipes (
-           slug, title, shortDescription, description, imageUrl, thumbUrl, categorySlug,
-           prepTime, cookingTime, totalTime, difficulty, portions, nutrition, tips, extraTips,
-           featured, communitySaves, updatedAt
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(slug) DO UPDATE SET
-           title = excluded.title,
-           shortDescription = excluded.shortDescription, description = excluded.description,
-           imageUrl = excluded.imageUrl, thumbUrl = excluded.thumbUrl,
-           categorySlug = excluded.categorySlug, prepTime = excluded.prepTime,
-           cookingTime = excluded.cookingTime, totalTime = excluded.totalTime,
-           difficulty = excluded.difficulty, portions = excluded.portions,
-           nutrition = excluded.nutrition, tips = excluded.tips, extraTips = excluded.extraTips,
-           featured = excluded.featured, communitySaves = excluded.communitySaves,
-           updatedAt = excluded.updatedAt`,
-        [
-          recipe.slug,
-          recipe.title,
-          recipe.shortDescription,
-          recipe.description,
-          recipe.imageUrl,
-          recipe.thumbUrl,
-          recipe.categorySlug,
-          recipe.prepTime,
-          recipe.cookingTime,
-          recipe.totalTime,
-          recipe.difficulty,
-          recipe.portions,
-          recipe.nutrition ? JSON.stringify(recipe.nutrition) : null,
-          recipe.tips,
-          recipe.extraTips ?? null,
-          recipe.featured ? 1 : 0,
-          recipe.communitySaves,
-          recipe.updatedAt,
-        ],
-      );
-
-      // Las relaciones se reescriben enteras: es más simple y más seguro que
-      // intentar reconciliar altas y bajas parciales.
-      await db.runAsync("DELETE FROM recipe_ingredients WHERE recipeSlug = ?", [recipe.slug]);
-      await db.runAsync("DELETE FROM recipe_steps WHERE recipeSlug = ?", [recipe.slug]);
-      await db.runAsync("DELETE FROM recipe_diet_tags WHERE recipeSlug = ?", [recipe.slug]);
-      await db.runAsync("DELETE FROM recipe_collections WHERE recipeSlug = ?", [recipe.slug]);
-      await db.runAsync("DELETE FROM recipe_photos WHERE recipeSlug = ?", [recipe.slug]);
-
-      /*
-       * Galería.
-       *
-       * `photos` puede no venir si el servidor es anterior a esta versión; en ese
-       * caso se arma una galería de una sola foto con la portada, de modo que la
-       * ficha siempre tenga algo que mostrar y el resto del código no necesite
-       * distinguir los dos casos.
-       */
-      const photos =
-        Array.isArray(recipe.photos) && recipe.photos.length > 0
-          ? recipe.photos
-          : recipe.imageUrl
-            ? [
-                {
-                  imageUrl: recipe.imageUrl,
-                  thumbUrl: recipe.thumbUrl,
-                  altText: null,
-                  sortOrder: 0,
-                  isCover: true,
-                },
-              ]
-            : [];
-
-      for (const photo of photos) {
-        await db.runAsync(
-          `INSERT OR REPLACE INTO recipe_photos
-           (recipeSlug, imageUrl, thumbUrl, altText, sortOrder, isCover)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [
-            recipe.slug,
-            photo.imageUrl,
-            photo.thumbUrl ?? null,
-            photo.altText ?? null,
-            photo.sortOrder ?? 0,
-            photo.isCover ? 1 : 0,
-          ],
-        );
-      }
-
-      for (const [index, item] of recipe.ingredients.entries()) {
-        const storedItem = recipeIngredientToLocalRow(item, index);
-        await db.runAsync(
-          `INSERT OR REPLACE INTO recipe_ingredients
-           (recipeSlug, ingredientSlug, quantity, unit, note, sortOrder, type, groupTitle)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            recipe.slug,
-            storedItem.ingredientSlug,
-            storedItem.quantity,
-            storedItem.unit,
-            storedItem.note,
-            storedItem.sortOrder ?? 0,
-            storedItem.type ?? "ingredient",
-            storedItem.groupTitle ?? null,
-          ],
-        );
-      }
-
-      for (const [index, step] of recipe.steps.entries()) {
-        const storedStep = recipeStepToLocalRow(step, index);
-        await db.runAsync(
-          `INSERT OR REPLACE INTO recipe_steps
-           (recipeSlug, stepNumber, description, durationMinutes, type, groupTitle, sortOrder)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [
-            recipe.slug,
-            storedStep.stepNumber,
-            storedStep.description,
-            storedStep.durationMinutes ?? null,
-            storedStep.type ?? "step",
-            storedStep.groupTitle ?? null,
-            storedStep.sortOrder ?? null,
-          ],
-        );
-      }
-
-      for (const slug of recipe.dietTagSlugs) {
-        await db.runAsync(
-          "INSERT OR REPLACE INTO recipe_diet_tags (recipeSlug, dietSlug) VALUES (?, ?)",
-          [recipe.slug, slug],
-        );
-      }
-
-      let collectionOrder = 0;
-      for (const slug of recipe.collectionSlugs) {
-        await db.runAsync(
-          `INSERT OR REPLACE INTO recipe_collections (recipeSlug, collectionSlug, sortOrder)
-           VALUES (?, ?, ?)`,
-          [recipe.slug, slug, collectionOrder],
-        );
-        collectionOrder += 1;
-      }
-    }
-
-    // Bajas: el servidor informa qué se eliminó desde la última sincronización.
-    for (const deletion of input.deletions) {
-      if (!deletion.slug) continue;
-
-      if (deletion.entity === "recipe") {
-        await db.runAsync("DELETE FROM recipes WHERE slug = ?", [deletion.slug]);
-        await db.runAsync("DELETE FROM recipe_ingredients WHERE recipeSlug = ?", [deletion.slug]);
-        await db.runAsync("DELETE FROM recipe_steps WHERE recipeSlug = ?", [deletion.slug]);
-        await db.runAsync("DELETE FROM recipe_diet_tags WHERE recipeSlug = ?", [deletion.slug]);
-        await db.runAsync("DELETE FROM recipe_collections WHERE recipeSlug = ?", [deletion.slug]);
-      } else if (deletion.entity === "collection") {
-        await db.runAsync("DELETE FROM collections WHERE slug = ?", [deletion.slug]);
-        await db.runAsync("DELETE FROM recipe_collections WHERE collectionSlug = ?", [deletion.slug]);
-      } else if (deletion.entity === "category") {
-        await db.runAsync("DELETE FROM categories WHERE slug = ?", [deletion.slug]);
-      } else if (deletion.entity === "dietTag") {
-        await db.runAsync("DELETE FROM diet_tags WHERE slug = ?", [deletion.slug]);
-      } else if (deletion.entity === "ingredient") {
-        await db.runAsync("DELETE FROM ingredients WHERE slug = ?", [deletion.slug]);
-      }
-    }
+    await runDeleteInBatches(db, plan.recipeDeletions, "DELETE FROM recipes WHERE slug IN (", markCompleted);
+    await runDeleteInBatches(
+      db,
+      plan.recipeDeletions,
+      "DELETE FROM recipe_ingredients WHERE recipeSlug IN (",
+      markCompleted,
+    );
+    await runDeleteInBatches(
+      db,
+      plan.recipeDeletions,
+      "DELETE FROM recipe_steps WHERE recipeSlug IN (",
+      markCompleted,
+    );
+    await runDeleteInBatches(
+      db,
+      plan.recipeDeletions,
+      "DELETE FROM recipe_diet_tags WHERE recipeSlug IN (",
+      markCompleted,
+    );
+    await runDeleteInBatches(
+      db,
+      plan.recipeDeletions,
+      "DELETE FROM recipe_collections WHERE recipeSlug IN (",
+      markCompleted,
+    );
+    await runDeleteInBatches(
+      db,
+      plan.collectionDeletions,
+      "DELETE FROM collections WHERE slug IN (",
+      markCompleted,
+    );
+    await runDeleteInBatches(
+      db,
+      plan.collectionDeletions,
+      "DELETE FROM recipe_collections WHERE collectionSlug IN (",
+      markCompleted,
+    );
+    await runDeleteInBatches(db, plan.categoryDeletions, "DELETE FROM categories WHERE slug IN (", markCompleted);
+    await runDeleteInBatches(db, plan.dietTagDeletions, "DELETE FROM diet_tags WHERE slug IN (", markCompleted);
+    await runDeleteInBatches(db, plan.ingredientDeletions, "DELETE FROM ingredients WHERE slug IN (", markCompleted);
 
     await db.runAsync(
       `UPDATE sync_state
@@ -317,7 +199,360 @@ export async function applyChanges(input: ApplyChangesInput): Promise<void> {
         input.recipeFormatVersion ?? 1,
       ],
     );
+    markCompleted();
   });
+
+  reportProgress(options.onProgress, total, total);
+}
+
+function reportProgress(
+  callback: ApplyChangesOptions["onProgress"],
+  completed: number,
+  total: number,
+): void {
+  if (!callback) return;
+  try {
+    callback({ completed, total });
+  } catch {
+    // El progreso no debe transformar un commit exitoso en un fallo de sync.
+  }
+}
+
+type SqlRow = readonly unknown[];
+
+interface CatalogBatchPlan {
+  ingredientRows: SqlRow[];
+  categoryRows: SqlRow[];
+  dietTagRows: SqlRow[];
+  collectionRows: SqlRow[];
+  recipeRows: SqlRow[];
+  photoRows: SqlRow[];
+  recipeIngredientRows: SqlRow[];
+  recipeStepRows: SqlRow[];
+  recipeDietRows: SqlRow[];
+  recipeCollectionRows: SqlRow[];
+  recipeSlugs: string[];
+  recipeDeletions: string[];
+  collectionDeletions: string[];
+  categoryDeletions: string[];
+  dietTagDeletions: string[];
+  ingredientDeletions: string[];
+  totalOperations: number;
+}
+
+const ingredientInsertPrefix =
+  `INSERT INTO ingredients (slug, name, pantryCategory, defaultUnit)
+   VALUES `;
+const ingredientInsertSuffix =
+  ` ON CONFLICT(slug) DO UPDATE SET
+     name = excluded.name,
+     pantryCategory = excluded.pantryCategory,
+     defaultUnit = excluded.defaultUnit`;
+
+const categoryInsertPrefix =
+  `INSERT INTO categories (slug, name, description, imageUrl, icon, sortOrder, updatedAt)
+   VALUES `;
+const categoryInsertSuffix =
+  ` ON CONFLICT(slug) DO UPDATE SET
+     name = excluded.name, description = excluded.description,
+     imageUrl = excluded.imageUrl, icon = excluded.icon,
+     sortOrder = excluded.sortOrder, updatedAt = excluded.updatedAt`;
+
+const dietTagInsertPrefix =
+  `INSERT INTO diet_tags (slug, name, description, sortOrder, updatedAt)
+   VALUES `;
+const dietTagInsertSuffix =
+  ` ON CONFLICT(slug) DO UPDATE SET
+     name = excluded.name, description = excluded.description,
+     sortOrder = excluded.sortOrder, updatedAt = excluded.updatedAt`;
+
+const collectionInsertPrefix =
+  `INSERT INTO collections (slug, name, tagline, description, imageUrl, accentColor, sortOrder, updatedAt)
+   VALUES `;
+const collectionInsertSuffix =
+  ` ON CONFLICT(slug) DO UPDATE SET
+     name = excluded.name, tagline = excluded.tagline,
+     description = excluded.description, imageUrl = excluded.imageUrl,
+     accentColor = excluded.accentColor, sortOrder = excluded.sortOrder,
+     updatedAt = excluded.updatedAt`;
+
+const recipeInsertPrefix =
+  `INSERT INTO recipes (
+     slug, title, shortDescription, description, imageUrl, thumbUrl, categorySlug,
+     prepTime, cookingTime, totalTime, difficulty, portions, nutrition, tips, extraTips,
+     featured, communitySaves, updatedAt
+   ) VALUES `;
+const recipeInsertSuffix =
+  ` ON CONFLICT(slug) DO UPDATE SET
+     title = excluded.title,
+     shortDescription = excluded.shortDescription, description = excluded.description,
+     imageUrl = excluded.imageUrl, thumbUrl = excluded.thumbUrl,
+     categorySlug = excluded.categorySlug, prepTime = excluded.prepTime,
+     cookingTime = excluded.cookingTime, totalTime = excluded.totalTime,
+     difficulty = excluded.difficulty, portions = excluded.portions,
+     nutrition = excluded.nutrition, tips = excluded.tips, extraTips = excluded.extraTips,
+     featured = excluded.featured, communitySaves = excluded.communitySaves,
+     updatedAt = excluded.updatedAt`;
+
+const photoInsertPrefix =
+  `INSERT OR REPLACE INTO recipe_photos
+   (recipeSlug, imageUrl, thumbUrl, altText, sortOrder, isCover)
+   VALUES `;
+const recipeIngredientInsertPrefix =
+  `INSERT OR REPLACE INTO recipe_ingredients
+   (recipeSlug, ingredientSlug, quantity, unit, note, sortOrder, type, groupTitle)
+   VALUES `;
+const recipeStepInsertPrefix =
+  `INSERT OR REPLACE INTO recipe_steps
+   (recipeSlug, stepNumber, description, durationMinutes, type, groupTitle, sortOrder)
+   VALUES `;
+const recipeDietInsertPrefix =
+  `INSERT OR REPLACE INTO recipe_diet_tags (recipeSlug, dietSlug) VALUES `;
+const recipeCollectionInsertPrefix =
+  `INSERT OR REPLACE INTO recipe_collections (recipeSlug, collectionSlug, sortOrder)
+   VALUES `;
+
+function ingredientInsertSql(rows: number): string {
+  return `${ingredientInsertPrefix}${rowPlaceholders(rows, 4)}${ingredientInsertSuffix}`;
+}
+function categoryInsertSql(rows: number): string {
+  return `${categoryInsertPrefix}${rowPlaceholders(rows, 7)}${categoryInsertSuffix}`;
+}
+function dietTagInsertSql(rows: number): string {
+  return `${dietTagInsertPrefix}${rowPlaceholders(rows, 5)}${dietTagInsertSuffix}`;
+}
+function collectionInsertSql(rows: number): string {
+  return `${collectionInsertPrefix}${rowPlaceholders(rows, 8)}${collectionInsertSuffix}`;
+}
+function recipeInsertSql(rows: number): string {
+  return `${recipeInsertPrefix}${rowPlaceholders(rows, 18)}${recipeInsertSuffix}`;
+}
+function photoInsertSql(rows: number): string {
+  return `${photoInsertPrefix}${rowPlaceholders(rows, 6)}`;
+}
+function recipeIngredientInsertSql(rows: number): string {
+  return `${recipeIngredientInsertPrefix}${rowPlaceholders(rows, 8)}`;
+}
+function recipeStepInsertSql(rows: number): string {
+  return `${recipeStepInsertPrefix}${rowPlaceholders(rows, 7)}`;
+}
+function recipeDietInsertSql(rows: number): string {
+  return `${recipeDietInsertPrefix}${rowPlaceholders(rows, 2)}`;
+}
+function recipeCollectionInsertSql(rows: number): string {
+  return `${recipeCollectionInsertPrefix}${rowPlaceholders(rows, 3)}`;
+}
+
+function buildCatalogBatchPlan(input: ApplyChangesInput): CatalogBatchPlan {
+  // Map conserva la posición de la primera clave, pero sustituye su valor: la
+  // última receta es la única que aporta hijos, igual que la secuencia antigua.
+  const recipes = lastByKey(input.recipes, (recipe) => recipe.slug);
+  const recipeSlugs = recipes.map((recipe) => recipe.slug);
+
+  const ingredientRows = input.ingredients.map((ingredient) => [
+    ingredient.slug,
+    ingredient.name,
+    ingredient.pantryCategory,
+    ingredient.defaultUnit,
+  ]);
+  const categoryRows = input.categories.map((category) => [
+    category.slug,
+    category.name,
+    category.description,
+    category.imageUrl,
+    category.icon,
+    category.sortOrder,
+    category.updatedAt,
+  ]);
+  const dietTagRows = input.dietTags.map((tag) => [
+    tag.slug,
+    tag.name,
+    tag.description,
+    tag.sortOrder,
+    tag.updatedAt,
+  ]);
+  const collectionRows = input.collections.map((collection) => [
+    collection.slug,
+    collection.name,
+    collection.tagline,
+    collection.description,
+    collection.imageUrl,
+    collection.accentColor,
+    collection.sortOrder,
+    collection.updatedAt,
+  ]);
+  const recipeRows = recipes.map((recipe) => [
+    recipe.slug,
+    recipe.title,
+    recipe.shortDescription,
+    recipe.description,
+    recipe.imageUrl,
+    recipe.thumbUrl,
+    recipe.categorySlug,
+    recipe.prepTime,
+    recipe.cookingTime,
+    recipe.totalTime,
+    recipe.difficulty,
+    recipe.portions,
+    recipe.nutrition ? JSON.stringify(recipe.nutrition) : null,
+    recipe.tips,
+    recipe.extraTips ?? null,
+    recipe.featured ? 1 : 0,
+    recipe.communitySaves,
+    recipe.updatedAt,
+  ]);
+
+  const photoRows: SqlRow[] = [];
+  const recipeIngredientRows: SqlRow[] = [];
+  const recipeStepRows: SqlRow[] = [];
+  const recipeDietRows: SqlRow[] = [];
+  const recipeCollectionRows: SqlRow[] = [];
+
+  for (const recipe of recipes) {
+    const photos =
+      Array.isArray(recipe.photos) && recipe.photos.length > 0
+        ? recipe.photos
+        : recipe.imageUrl
+          ? [
+              {
+                imageUrl: recipe.imageUrl,
+                thumbUrl: recipe.thumbUrl,
+                altText: null,
+                sortOrder: 0,
+                isCover: true,
+              },
+            ]
+          : [];
+    for (const photo of photos) {
+      photoRows.push([
+        recipe.slug,
+        photo.imageUrl,
+        photo.thumbUrl ?? null,
+        photo.altText ?? null,
+        photo.sortOrder ?? 0,
+        photo.isCover ? 1 : 0,
+      ]);
+    }
+
+    for (const [index, item] of recipe.ingredients.entries()) {
+      const storedItem = recipeIngredientToLocalRow(item, index);
+      recipeIngredientRows.push([
+        recipe.slug,
+        storedItem.ingredientSlug,
+        storedItem.quantity,
+        storedItem.unit,
+        storedItem.note,
+        storedItem.sortOrder ?? 0,
+        storedItem.type ?? "ingredient",
+        storedItem.groupTitle ?? null,
+      ]);
+    }
+
+    for (const [index, step] of recipe.steps.entries()) {
+      const storedStep = recipeStepToLocalRow(step, index);
+      recipeStepRows.push([
+        recipe.slug,
+        storedStep.stepNumber,
+        storedStep.description,
+        storedStep.durationMinutes ?? null,
+        storedStep.type ?? "step",
+        storedStep.groupTitle ?? null,
+        storedStep.sortOrder ?? null,
+      ]);
+    }
+
+    for (const slug of recipe.dietTagSlugs) {
+      recipeDietRows.push([recipe.slug, slug]);
+    }
+    for (const [sortOrder, slug] of recipe.collectionSlugs.entries()) {
+      recipeCollectionRows.push([recipe.slug, slug, sortOrder]);
+    }
+  }
+
+  const recipeDeletions: string[] = [];
+  const collectionDeletions: string[] = [];
+  const categoryDeletions: string[] = [];
+  const dietTagDeletions: string[] = [];
+  const ingredientDeletions: string[] = [];
+  for (const deletion of input.deletions) {
+    if (!deletion.slug) continue;
+    if (deletion.entity === "recipe") recipeDeletions.push(deletion.slug);
+    else if (deletion.entity === "collection") collectionDeletions.push(deletion.slug);
+    else if (deletion.entity === "category") categoryDeletions.push(deletion.slug);
+    else if (deletion.entity === "dietTag") dietTagDeletions.push(deletion.slug);
+    else if (deletion.entity === "ingredient") ingredientDeletions.push(deletion.slug);
+  }
+
+  const totalOperations =
+    1 +
+    countBatches(ingredientRows.length, 4) +
+    countBatches(categoryRows.length, 7) +
+    countBatches(dietTagRows.length, 5) +
+    countBatches(collectionRows.length, 8) +
+    countBatches(recipeRows.length, 18) +
+    countBatches(recipeSlugs.length, 1) * 5 +
+    countBatches(photoRows.length, 6) +
+    countBatches(recipeIngredientRows.length, 8) +
+    countBatches(recipeStepRows.length, 7) +
+    countBatches(recipeDietRows.length, 2) +
+    countBatches(recipeCollectionRows.length, 3) +
+    countBatches(recipeDeletions.length, 1) * 5 +
+    countBatches(collectionDeletions.length, 1) * 2 +
+    countBatches(categoryDeletions.length, 1) +
+    countBatches(dietTagDeletions.length, 1) +
+    countBatches(ingredientDeletions.length, 1);
+
+  return {
+    ingredientRows,
+    categoryRows,
+    dietTagRows,
+    collectionRows,
+    recipeRows,
+    photoRows,
+    recipeIngredientRows,
+    recipeStepRows,
+    recipeDietRows,
+    recipeCollectionRows,
+    recipeSlugs,
+    recipeDeletions,
+    collectionDeletions,
+    categoryDeletions,
+    dietTagDeletions,
+    ingredientDeletions,
+    totalOperations,
+  };
+}
+
+function countBatches(rowCount: number, parametersPerRow: number): number {
+  return rowCount === 0 ? 0 : Math.ceil(rowCount / maxBatchRows(parametersPerRow));
+}
+
+async function runInsertBatches(
+  db: Awaited<ReturnType<typeof getLocalDb>>,
+  rows: readonly SqlRow[],
+  parametersPerRow: number,
+  sqlForRows: (rowCount: number) => string,
+  markCompleted: () => void,
+): Promise<void> {
+  for (const batch of chunkRows(rows, parametersPerRow)) {
+    await db.runAsync(
+      sqlForRows(batch.length),
+      batch.flatMap((row) => Array.from(row)),
+    );
+    markCompleted();
+  }
+}
+
+async function runDeleteInBatches(
+  db: Awaited<ReturnType<typeof getLocalDb>>,
+  values: readonly string[],
+  sqlPrefix: string,
+  markCompleted: () => void,
+): Promise<void> {
+  for (const batch of chunkRows(values, 1)) {
+    await db.runAsync(`${sqlPrefix}${inPlaceholders(batch.length)})`, batch);
+    markCompleted();
+  }
 }
 
 export interface LocalSyncState {
