@@ -96,8 +96,8 @@ describe("configuración de la aplicación Android", () => {
   });
 
   it("conserva la versión y el versionCode acordados", () => {
-    expect(appConfig).toMatch(/version:\s*"1\.0\.3"/);
-    expect(appConfig).toMatch(/versionCode:\s*4\b/);
+    expect(appConfig).toMatch(/version:\s*"1\.0\.4"/);
+    expect(appConfig).toMatch(/versionCode:\s*5\b/);
   });
 
   it("mantiene el proyecto y el propietario de EAS sin cambios", () => {

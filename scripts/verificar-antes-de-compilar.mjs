@@ -23,8 +23,8 @@ const ESPERADO = {
   slug: "cocina-tu-mejor-version",
   projectId: "3a4a1b52-966f-4ece-acb6-906aa1daa43c",
   package: "com.alimentosdetransicion.app",
-  version: "1.0.3",
-  versionCode: 4,
+  version: "1.0.4",
+  versionCode: 5,
   servidor: "https://cocinareceta-fhboicw9.manus.space",
 };
 
